@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+  web:
+    build:
+      context: ../../
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api-bff:8000
+    depends_on:
+      - api-bff
+
+  api-bff:
+    build:
+      context: ../../
+      dockerfile: apps/api-bff/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ORCHESTRATOR_URL: http://orchestrator:8010
+      TOOL_GATEWAY_URL: http://tool-gateway:8020
+      EVENT_INGESTION_URL: http://event-ingestion:8060
+
+  orchestrator:
+    build:
+      context: ../../
+      dockerfile: services/langgraph-orchestrator/Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      TOOL_GATEWAY_URL: http://tool-gateway:8020
+      CHANGE_IMPACT_SERVICE_URL: http://change-impact:8040
+      EVIDENCE_AGGREGATOR_URL: http://evidence-aggregator:8050
+
+  tool-gateway:
+    build:
+      context: ../../
+      dockerfile: services/tool-gateway/Dockerfile
+    ports:
+      - "8020:8020"
+    environment:
+      VMWARE_GATEWAY_URL: http://vmware-gateway:8030
+      CHANGE_IMPACT_URL: http://change-impact:8040
+
+  vmware-gateway:
+    build:
+      context: ../../
+      dockerfile: services/vmware-skill-gateway/Dockerfile
+    ports:
+      - "8030:8030"
+
+  change-impact:
+    build:
+      context: ../../
+      dockerfile: services/change-impact-service/Dockerfile
+    ports:
+      - "8040:8040"
+
+  evidence-aggregator:
+    build:
+      context: ../../
+      dockerfile: services/evidence-aggregator/Dockerfile
+    ports:
+      - "8050:8050"
+
+  event-ingestion:
+    build:
+      context: ../../
+      dockerfile: services/event-ingestion-service/Dockerfile
+    ports:
+      - "8060:8060"

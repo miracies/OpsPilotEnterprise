@@ -1,0 +1,15 @@
+{
+  "name": "opspilot-enterprise",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OpsPilot Enterprise - AIOps Platform",
+  "scripts": {
+    "dev:web": "pnpm --filter @opspilot/web dev",
+    "build:web": "pnpm --filter @opspilot/web build",
+    "dev:all": "pnpm run --parallel dev:web"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=8"
+  }
+}
