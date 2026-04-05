@@ -22,6 +22,9 @@ services:
       ORCHESTRATOR_URL: http://orchestrator:8010
       TOOL_GATEWAY_URL: http://tool-gateway:8020
       EVENT_INGESTION_URL: http://event-ingestion:8060
+      APPROVAL_CENTER_URL: http://approval-center:8070
+      GOVERNANCE_SERVICE_URL: http://governance:8071
+      KNOWLEDGE_SERVICE_URL: http://knowledge:8072
 
   orchestrator:
     build:
@@ -33,6 +36,7 @@ services:
       TOOL_GATEWAY_URL: http://tool-gateway:8020
       CHANGE_IMPACT_SERVICE_URL: http://change-impact:8040
       EVIDENCE_AGGREGATOR_URL: http://evidence-aggregator:8050
+      APPROVAL_CENTER_URL: http://approval-center:8070
 
   tool-gateway:
     build:
@@ -43,6 +47,7 @@ services:
     environment:
       VMWARE_GATEWAY_URL: http://vmware-gateway:8030
       CHANGE_IMPACT_URL: http://change-impact:8040
+      GOVERNANCE_SERVICE_URL: http://governance:8071
 
   vmware-gateway:
     build:
@@ -71,3 +76,26 @@ services:
       dockerfile: services/event-ingestion-service/Dockerfile
     ports:
       - "8060:8060"
+
+  # ── P1 Services ────────────────────────────────────────────────────────────
+
+  approval-center:
+    build:
+      context: ../../
+      dockerfile: services/approval-center-service/Dockerfile
+    ports:
+      - "8070:8070"
+
+  governance:
+    build:
+      context: ../../
+      dockerfile: services/governance-service/Dockerfile
+    ports:
+      - "8071:8071"
+
+  knowledge:
+    build:
+      context: ../../
+      dockerfile: services/knowledge-service/Dockerfile
+    ports:
+      - "8072:8072"

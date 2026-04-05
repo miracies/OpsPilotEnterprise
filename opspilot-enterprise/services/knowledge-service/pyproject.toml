@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opspilot-knowledge-service"
+version = "0.2.0"
+description = "OpsPilot Knowledge Service: knowledge articles and case archive"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2.0",
+    "opspilot-shared-schema @ file:../../packages/shared-schema",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

@@ -3,7 +3,7 @@
 import {
   FileText, BookOpen, Archive, Wrench,
   CheckCircle2, Clock, Radio, AlertCircle,
-  Download, Play,
+  Download, Play, Bot, ShieldCheck,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Badge, SeverityBadge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatDate } from "@/lib/utils";
 import { mockIncidents, mockEvidences, mockIncidentTimeline } from "@/lib/mock-data";
+import Link from "next/link";
 
 const incident = mockIncidents[0];
 const evidences = mockEvidences.filter((e) => incident.evidence_refs.includes(e.evidence_id));
@@ -323,6 +324,33 @@ export default function DiagnosisPage() {
               ))}
             </CardContent>
           </Card>
+
+          {/* P1 Cross-page CTAs */}
+          <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+            <p className="text-xs font-semibold text-blue-700 mb-3">诊断完成后的快捷操作</p>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/agents">
+                <Button variant="secondary" size="sm">
+                  <Bot className="h-3.5 w-3.5" /> 查看 Agent 执行记录
+                </Button>
+              </Link>
+              <Link href="/cases">
+                <Button variant="secondary" size="sm">
+                  <Archive className="h-3.5 w-3.5" /> 相似历史案例
+                </Button>
+              </Link>
+              <Link href="/knowledge">
+                <Button variant="secondary" size="sm">
+                  <BookOpen className="h-3.5 w-3.5" /> 相关知识库
+                </Button>
+              </Link>
+              <Link href="/approvals">
+                <Button variant="primary" size="sm">
+                  <ShieldCheck className="h-3.5 w-3.5" /> 发起修复审批
+                </Button>
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@
 import {
   ArrowRightLeft, ChevronRight, CheckCircle2,
   RotateCcw, Play, AlertTriangle, ShieldAlert,
-  Network,
+  Network, ShieldCheck, Archive,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Badge, RiskBadge, SeverityBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { mockChangeImpactResult } from "@/lib/mock-data";
+import Link from "next/link";
 
 const result = mockChangeImpactResult;
 
@@ -200,6 +201,30 @@ export default function ChangeImpactPage() {
             ))}
           </CardContent>
         </Card>
+
+        {/* Cross-page CTAs */}
+        <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+          <p className="text-xs font-semibold text-blue-700 mb-3">分析完成后的下一步</p>
+          <div className="flex flex-wrap gap-2">
+            {result.approval_suggestion === "required" && (
+              <Link href="/approvals">
+                <Button variant="primary" size="sm">
+                  <ShieldCheck className="h-3.5 w-3.5" /> 发起审批申请
+                </Button>
+              </Link>
+            )}
+            <Link href="/cases">
+              <Button variant="secondary" size="sm">
+                <Archive className="h-3.5 w-3.5" /> 查看相似案例
+              </Button>
+            </Link>
+            <Link href="/policies">
+              <Button variant="secondary" size="sm">
+                <ShieldAlert className="h-3.5 w-3.5" /> 检查策略规则
+              </Button>
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   );

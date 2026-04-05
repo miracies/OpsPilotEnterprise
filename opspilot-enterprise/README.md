@@ -58,13 +58,19 @@ cd apps/web && pnpm install
 # 后端共享 schema
 pip install -e packages/shared-schema
 
-# 各后端服务
+# P0 服务
 pip install -e services/tool-gateway --no-deps
 pip install -e services/vmware-skill-gateway --no-deps
 pip install -e services/change-impact-service --no-deps
 pip install -e services/evidence-aggregator --no-deps
 pip install -e services/event-ingestion-service --no-deps
 pip install -e services/langgraph-orchestrator --no-deps
+
+# P1 服务
+pip install -e services/approval-center-service --no-deps
+pip install -e services/governance-service --no-deps
+pip install -e services/knowledge-service --no-deps
+
 pip install -e apps/api-bff --no-deps
 ```
 
@@ -85,12 +91,19 @@ bash scripts/dev-backend.sh
 或手动逐个启动：
 
 ```bash
+# P0 services
 uvicorn app.main:app --port 8020 --reload  # Tool Gateway
 uvicorn app.main:app --port 8030 --reload  # VMware Gateway
 uvicorn app.main:app --port 8040 --reload  # Change Impact
 uvicorn app.main:app --port 8050 --reload  # Evidence Aggregator
 uvicorn app.main:app --port 8060 --reload  # Event Ingestion
 uvicorn app.main:app --port 8010 --reload  # Orchestrator
+
+# P1 services
+uvicorn app.main:app --port 8070 --reload  # Approval Center
+uvicorn app.main:app --port 8071 --reload  # Governance Service
+uvicorn app.main:app --port 8072 --reload  # Knowledge Service
+
 uvicorn app.main:app --port 8000 --reload  # API BFF
 ```
 
@@ -122,10 +135,13 @@ opspilot-enterprise/
 │   ├── vmware-skill-gateway/         # VMware 领域服务 (mock)
 │   ├── change-impact-service/        # 变更影响分析
 │   ├── evidence-aggregator/          # 证据聚合
-│   └── event-ingestion-service/      # 事件接入
+│   ├── event-ingestion-service/      # 事件接入
+│   ├── approval-center-service/      # [P1] 审批中心 & 值班通知 (:8070)
+│   ├── governance-service/           # [P1] 审计、策略(OPA stub)、升级 (:8071)
+│   └── knowledge-service/            # [P1] 知识管理 & 案例归档 (:8072)
 ├── packages/
-│   ├── shared-types/                 # TypeScript 类型定义
-│   ├── shared-schema/                # Python Pydantic schema
+│   ├── shared-types/                 # TypeScript 类型定义 (P0+P1)
+│   ├── shared-schema/                # Python Pydantic schema (P0+P1)
 │   └── shared-ui/                    # (预留) 公共 UI 组件
 ├── deploy/docker/                    # Docker Compose
 ├── policy/rego/                      # OPA 策略示例
@@ -166,18 +182,51 @@ opspilot-enterprise/
 | GET  | `/api/v1/tools/health`                | 工具健康   |
 
 
+### P1 接口
+
+
+| 方法    | 路径                                       | 说明            |
+| ----- | ---------------------------------------- | ------------- |
+| GET   | `/api/v1/approvals`                      | 审批申请列表        |
+| GET   | `/api/v1/approvals/{id}`                 | 审批详情          |
+| POST  | `/api/v1/approvals/{id}/decide`          | 审批决策（通过/驳回）   |
+| GET   | `/api/v1/notifications`                  | 通知列表          |
+| POST  | `/api/v1/notifications/{id}/acknowledge` | 确认通知          |
+| GET   | `/api/v1/oncall/shifts`                  | 值班排班          |
+| GET   | `/api/v1/audit/logs`                     | 审计日志          |
+| GET   | `/api/v1/audit/logs/{id}`                | 审计日志详情        |
+| GET   | `/api/v1/knowledge/articles`             | 知识条目列表        |
+| GET   | `/api/v1/knowledge/articles/{id}`        | 知识条目详情        |
+| GET   | `/api/v1/knowledge/import-jobs`          | 导入任务列表        |
+| GET   | `/api/v1/policies`                       | 策略列表          |
+| GET   | `/api/v1/policies/{id}`                  | 策略详情          |
+| PATCH | `/api/v1/policies/{id}/toggle`           | 启/停策略         |
+| GET   | `/api/v1/policies/{id}/hits`             | 策略命中记录        |
+| GET   | `/api/v1/cases`                          | 案例归档列表        |
+| GET   | `/api/v1/cases/{id}`                     | 案例详情          |
+| GET   | `/api/v1/agent-runs`                     | Agent 运行记录    |
+| GET   | `/api/v1/agent-runs/{id}`                | 运行详情（含 steps） |
+| GET   | `/api/v1/upgrades`                       | 升级包列表         |
+| GET   | `/api/v1/upgrades/{id}`                  | 升级包详情         |
+| POST  | `/api/v1/upgrades/{id}/deploy`           | 触发部署（mock）    |
+| GET   | `/api/v1/upgrades/deployments/history`   | 部署历史          |
+
+
 ### 各服务健康检查
 
 
-| 服务              | 端口   | 端点                   |
-| --------------- | ---- | -------------------- |
-| API BFF         | 8000 | `GET /health`        |
-| Orchestrator    | 8010 | `GET /health`        |
-| Tool Gateway    | 8020 | `GET /api/v1/health` |
-| VMware Gateway  | 8030 | `GET /health`        |
-| Change Impact   | 8040 | `GET /health`        |
-| Evidence Agg.   | 8050 | `GET /health`        |
-| Event Ingestion | 8060 | `GET /health`        |
+| 服务                   | 端口   | 端点                   |
+| -------------------- | ---- | -------------------- |
+| API BFF              | 8000 | `GET /health`        |
+| Orchestrator         | 8010 | `GET /health`        |
+| Tool Gateway         | 8020 | `GET /api/v1/health` |
+| VMware Gateway       | 8030 | `GET /health`        |
+| Change Impact        | 8040 | `GET /health`        |
+| Evidence Agg.        | 8050 | `GET /health`        |
+| Event Ingestion      | 8060 | `GET /health`        |
+| Approval Center [P1] | 8070 | `GET /health`        |
+| Governance Svc [P1]  | 8071 | `GET /health`        |
+| Knowledge Svc [P1]   | 8072 | `GET /health`        |
 
 
 ## 设计原则
@@ -191,13 +240,30 @@ opspilot-enterprise/
 7. **先 mock 跑通，再接真实 VMware/OPA/n8n/RAG**
 8. **平台必须支持新 Skill/Gateway 动态接入**
 
-## 首期 P0 页面
+## P0 页面
 
 - **驾驶舱** — 全局运维态势总览
 - **AI 对话** — 自然语言运维协作，支持工具轨迹与证据展示
 - **故障事件中心** — 事件列表、筛选、预览与快速进入处置
 - **诊断工作台** — 三栏布局：上下文 + 分析 + 辅助信息
 - **变更分析** — 影响范围、风险评分、依赖图、回退方案
+
+## P1 页面
+
+- **审批中心** — 高风险操作审批队列、风险标签、通过/驳回决策
+- **值班通知中心** — 通知流、升级状态、触达渠道、值班排班
+- **审计中心** — 所有 AI/人工操作的完整审计时间线
+- **SubAgent 运行视图** — 实时 Agent 执行 DAG、阶段耗时、工具调用摘要
+- **案例归档中心** — 历史故障案例、相似度匹配、经验教训沉淀
+- **知识管理** — 知识条目列表、来源、版本、导入任务
+- **策略管理** — 运维策略列表、启停状态、OPA Rego 规则展示
+- **升级管理** — 版本包列表、部署状态、回滚入口
+
+## 演示链路
+
+- **诊断链路**：驾驶舱 → 故障事件 → 诊断工作台 → 变更分析 → 审批中心
+- **治理链路**：审批中心 → 审计中心 → 策略管理 → Agent 视图
+- **知识闭环**：诊断工作台 → 案例归档 → 知识管理 → AI 对话引用
 
 ## 许可证
 
