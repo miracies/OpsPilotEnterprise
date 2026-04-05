@@ -70,19 +70,23 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-full w-56 flex-col border-r border-gray-200 bg-white">
-      <div className="flex h-14 items-center gap-2 border-b border-gray-200 px-4">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white text-xs font-bold">
+    <aside className="flex h-full w-[220px] shrink-0 flex-col border-r border-slate-200 bg-white">
+      {/* Brand */}
+      <div className="flex h-[54px] items-center gap-2.5 px-4 border-b border-slate-100">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600 text-white text-[11px] font-extrabold tracking-tight shrink-0">
           OP
         </div>
-        <span className="text-sm font-bold text-gray-900">OpsPilot</span>
-        <span className="text-[10px] text-gray-400 ml-auto">v0.1</span>
+        <div className="leading-none">
+          <span className="text-[13px] font-bold text-slate-900 tracking-tight">OpsPilot</span>
+          <span className="block text-[10px] text-slate-400 mt-0.5">Enterprise</span>
+        </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      {/* Nav */}
+      <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
         {navGroups.map((group) => (
           <div key={group.label}>
-            <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            <p className="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
               {group.label}
             </p>
             <ul className="space-y-0.5">
@@ -96,13 +100,13 @@ export function Sidebar() {
                     <Link
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                        "flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-all duration-150",
                         active
-                          ? "bg-blue-50 text-blue-700 font-medium"
-                          : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                          ? "bg-blue-50 text-blue-700 font-semibold shadow-[inset_2px_0_0_0_#2563eb] pl-[10px]"
+                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                       )}
                     >
-                      <item.icon className="h-4 w-4 shrink-0" />
+                      <item.icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-blue-600" : "text-slate-400")} />
                       {item.label}
                     </Link>
                   </li>
@@ -112,6 +116,11 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+
+      {/* Footer */}
+      <div className="border-t border-slate-100 px-4 py-3">
+        <p className="text-[10px] text-slate-400">v0.1.0-P0-MVP</p>
+      </div>
     </aside>
   );
 }
