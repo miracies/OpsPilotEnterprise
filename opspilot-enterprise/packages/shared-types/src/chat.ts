@@ -33,4 +33,6 @@ export interface ChatMessage {
   }>;
   recommended_actions?: string[];
   agent_name?: string;
+  diagnosis_id?: string;
+  incident_id?: string;
 }

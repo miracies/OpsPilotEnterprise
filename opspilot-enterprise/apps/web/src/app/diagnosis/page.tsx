@@ -1,56 +1,122 @@
 "use client";
 
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   FileText, BookOpen, Archive, Wrench,
   CheckCircle2, Clock, Radio, AlertCircle,
-  Download, Play, Bot, ShieldCheck,
+  Download, Play, Bot, ShieldCheck, Loader2, MessageSquare,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge, SeverityBadge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatDate } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 import { mockIncidents, mockEvidences, mockIncidentTimeline } from "@/lib/mock-data";
 import Link from "next/link";
 
-const incident = mockIncidents[0];
-const evidences = mockEvidences.filter((e) => incident.evidence_refs.includes(e.evidence_id));
+interface DiagnosisData {
+  diagnosis_id: string;
+  session_id?: string;
+  description: string;
+  assistant_message: string;
+  root_cause_candidates: Array<{ description: string; confidence: number; category?: string }>;
+  evidence_refs: string[];
+  evidences: Array<{ evidence_id: string; source_type: string; summary: string; confidence: number; timestamp: string }>;
+  recommended_actions: string[];
+  tool_traces: Array<{ tool_name: string; gateway: string; input_summary: string; output_summary: string; duration_ms: number; status: string; timestamp: string }>;
+  created_at?: string;
+}
 
 const TIMELINE_COLORS: Record<string, string> = {
-  event:        "bg-red-500 ring-red-100",
-  analysis:     "bg-blue-500 ring-blue-100",
+  event: "bg-red-500 ring-red-100",
+  analysis: "bg-blue-500 ring-blue-100",
   notification: "bg-amber-500 ring-amber-100",
-  action:       "bg-emerald-500 ring-emerald-100",
+  action: "bg-emerald-500 ring-emerald-100",
 };
 const TIMELINE_TEXT: Record<string, string> = {
-  event:        "text-red-600",
-  analysis:     "text-blue-600",
+  event: "text-red-600",
+  analysis: "text-blue-600",
   notification: "text-amber-600",
-  action:       "text-emerald-600",
+  action: "text-emerald-600",
 };
 const TIMELINE_LABEL: Record<string, string> = {
-  event:        "事件",
-  analysis:     "AI分析",
+  event: "事件",
+  analysis: "AI分析",
   notification: "通知",
-  action:       "执行",
+  action: "执行",
 };
 
-const AGENT_LIST = [
-  { name: "IntentAgent",            status: "done" },
-  { name: "EvidenceCollectionAgent", status: "done" },
-  { name: "KBRetrievalAgent",       status: "done" },
-  { name: "RCAAgent",               status: "done" },
-  { name: "NotificationAgent",      status: "done" },
-];
-
 export default function DiagnosisPage() {
+  const searchParams = useSearchParams();
+  const diagnosisId = searchParams.get("diagnosis_id");
+  const [diagData, setDiagData] = useState<DiagnosisData | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!diagnosisId) return;
+    setLoading(true);
+    apiFetch<{ success: boolean; data: DiagnosisData }>(`/api/v1/chat/diagnoses/${diagnosisId}`)
+      .then((res) => {
+        if (res.success) setDiagData(res.data);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [diagnosisId]);
+
+  // Choose data source: API diagnosis or mock fallback
+  const useMock = !diagnosisId || !diagData;
+  const incident = useMock ? mockIncidents[0] : null;
+  const evidences = useMock
+    ? mockEvidences.filter((e) => incident!.evidence_refs.includes(e.evidence_id))
+    : diagData!.evidences;
+  const rootCauseCandidates = useMock
+    ? incident!.root_cause_candidates
+    : diagData!.root_cause_candidates.map((rc, i) => ({
+        id: `rc-${i}`,
+        description: rc.description,
+        confidence: rc.confidence,
+        category: rc.category ?? "unknown",
+        evidence_refs: diagData!.evidence_refs,
+      }));
+  const recommendedActions = useMock
+    ? incident!.recommended_actions
+    : diagData!.recommended_actions;
+  const toolTraces = useMock ? [] : diagData!.tool_traces;
+  const title = useMock ? incident!.title : diagData!.description;
+  const diagId = useMock ? undefined : diagData!.diagnosis_id;
+  const sessionId = useMock ? undefined : diagData!.session_id;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+        <span className="ml-3 text-sm text-slate-500">加载诊断数据...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)]">
       <PageHeader
         title="诊断工作台"
-        description={incident.title}
+        description={
+          <span className="flex items-center gap-2">
+            {title}
+            {diagId && <Badge variant="neutral" className="font-mono text-[10px]">{diagId}</Badge>}
+          </span>
+        }
         actions={
           <div className="flex gap-2">
+            {sessionId && (
+              <Link href={`/chat`}>
+                <Button variant="secondary" size="sm">
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  返回会话
+                </Button>
+              </Link>
+            )}
             <Button variant="secondary" size="sm">
               <Download className="h-3.5 w-3.5" />
               导出报告
@@ -64,61 +130,75 @@ export default function DiagnosisPage() {
       />
 
       <div className="flex gap-4 flex-1 min-h-0">
-        {/* ── Left Column: Context ─────────── */}
+        {/* Left Column: Context */}
         <div className="w-56 shrink-0 space-y-3 overflow-y-auto">
-          {/* Incident summary */}
-          <Card>
-            <CardHeader>
-              <CardTitle>事件摘要</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2.5">
-              <div className="flex items-center gap-1.5">
-                <SeverityBadge severity={incident.severity} />
-                <StatusBadge status={incident.status} />
-              </div>
-              <p className="text-xs text-slate-700 leading-relaxed">{incident.summary}</p>
-              <p className="text-[11px] text-slate-400 flex items-center gap-1">
-                <Clock className="h-3 w-3" /> {formatDate(incident.first_seen_at)}
-              </p>
-            </CardContent>
-          </Card>
+          {useMock && incident && (
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle>事件摘要</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <SeverityBadge severity={incident.severity} />
+                    <StatusBadge status={incident.status} />
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed">{incident.summary}</p>
+                  <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                    <Clock className="h-3 w-3" /> {formatDate(incident.first_seen_at)}
+                  </p>
+                </CardContent>
+              </Card>
 
-          {/* Affected resources */}
-          <Card>
-            <CardHeader>
-              <CardTitle>受影响资源</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1.5">
-              {incident.affected_objects.map((o) => (
-                <div key={o.object_id} className="flex items-center gap-1.5 rounded-md bg-slate-50 px-2 py-1.5">
-                  <Radio className="h-2.5 w-2.5 text-red-400 shrink-0" />
-                  <Badge variant="neutral">{o.object_type}</Badge>
-                  <span className="text-xs text-slate-700 truncate">{o.object_name}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>受影响资源</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5">
+                  {incident.affected_objects.map((o) => (
+                    <div key={o.object_id} className="flex items-center gap-1.5 rounded-md bg-slate-50 px-2 py-1.5">
+                      <Radio className="h-2.5 w-2.5 text-red-400 shrink-0" />
+                      <Badge variant="neutral">{o.object_type}</Badge>
+                      <span className="text-xs text-slate-700 truncate">{o.object_name}</span>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
 
-          {/* Related alerts */}
-          <Card>
-            <CardHeader>
-              <CardTitle>相关告警</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1.5">
-              {[
-                "CPU > 95% 持续 30min",
-                "CPU ready time > 10%",
-              ].map((alert) => (
-                <div key={alert} className="flex items-start gap-1.5 text-xs text-slate-700">
-                  <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-0.5" />
-                  {alert}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>相关告警</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5">
+                  {["CPU > 95% 持续 30min", "CPU ready time > 10%"].map((alert) => (
+                    <div key={alert} className="flex items-start gap-1.5 text-xs text-slate-700">
+                      <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-0.5" />
+                      {alert}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </>
+          )}
+
+          {!useMock && (
+            <Card>
+              <CardHeader>
+                <CardTitle>诊断信息</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2.5">
+                <p className="text-xs text-slate-700 leading-relaxed">{diagData!.description}</p>
+                {diagData!.created_at && (
+                  <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                    <Clock className="h-3 w-3" /> {formatDate(diagData!.created_at)}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
 
-        {/* ── Center Column: Analysis ──────── */}
+        {/* Center Column: Analysis */}
         <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
           {/* Root cause candidates */}
           <Card>
@@ -127,9 +207,9 @@ export default function DiagnosisPage() {
               <span className="text-xs text-slate-400">AI 可解释性输出</span>
             </CardHeader>
             <CardContent className="space-y-3">
-              {incident.root_cause_candidates.map((rc, i) => (
+              {rootCauseCandidates.map((rc, i) => (
                 <div
-                  key={rc.id}
+                  key={rc.id ?? i}
                   className={cn(
                     "rounded-xl border p-4",
                     i === 0
@@ -169,50 +249,77 @@ export default function DiagnosisPage() {
                     </div>
                   </div>
                   <p className="text-sm text-slate-900 leading-relaxed">{rc.description}</p>
-                  <div className="flex items-center gap-2 mt-2">
-                    <FileText className="h-3 w-3 text-slate-400" />
-                    <span className="text-xs text-slate-500">关联证据 {rc.evidence_refs.length} 条</span>
-                  </div>
+                  {"evidence_refs" in rc && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <FileText className="h-3 w-3 text-slate-400" />
+                      <span className="text-xs text-slate-500">关联证据 {(rc as { evidence_refs: string[] }).evidence_refs.length} 条</span>
+                    </div>
+                  )}
                 </div>
               ))}
             </CardContent>
           </Card>
 
-          {/* Timeline */}
-          <Card>
-            <CardHeader>
-              <CardTitle>证据时间线</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="relative pl-6">
-                {mockIncidentTimeline.map((entry, i) => (
-                  <div key={i} className="relative pb-5 last:pb-0">
-                    {i < mockIncidentTimeline.length - 1 && (
-                      <span className="absolute left-[-17px] top-5 w-px h-full bg-slate-100" />
-                    )}
-                    <span className={cn(
-                      "absolute left-[-21px] top-0.5 h-4 w-4 rounded-full flex items-center justify-center ring-4",
-                      TIMELINE_COLORS[entry.type] ?? "bg-slate-400 ring-slate-100"
-                    )}>
-                    </span>
-                    <div>
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className={cn(
-                          "text-[10px] font-semibold uppercase tracking-wide",
-                          TIMELINE_TEXT[entry.type] ?? "text-slate-500"
-                        )}>
-                          {TIMELINE_LABEL[entry.type] ?? entry.type}
-                        </span>
-                        {entry.agent && <Badge variant="neutral">{entry.agent}</Badge>}
+          {/* Timeline - show for mock mode */}
+          {useMock && (
+            <Card>
+              <CardHeader>
+                <CardTitle>证据时间线</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="relative pl-6">
+                  {mockIncidentTimeline.map((entry, i) => (
+                    <div key={i} className="relative pb-5 last:pb-0">
+                      {i < mockIncidentTimeline.length - 1 && (
+                        <span className="absolute left-[-17px] top-5 w-px h-full bg-slate-100" />
+                      )}
+                      <span className={cn(
+                        "absolute left-[-21px] top-0.5 h-4 w-4 rounded-full flex items-center justify-center ring-4",
+                        TIMELINE_COLORS[entry.type] ?? "bg-slate-400 ring-slate-100"
+                      )} />
+                      <div>
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className={cn(
+                            "text-[10px] font-semibold uppercase tracking-wide",
+                            TIMELINE_TEXT[entry.type] ?? "text-slate-500"
+                          )}>
+                            {TIMELINE_LABEL[entry.type] ?? entry.type}
+                          </span>
+                          {entry.agent && <Badge variant="neutral">{entry.agent}</Badge>}
+                        </div>
+                        <p className="text-sm text-slate-900">{entry.summary}</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">{formatDate(entry.timestamp)}</p>
                       </div>
-                      <p className="text-sm text-slate-900">{entry.summary}</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">{formatDate(entry.timestamp)}</p>
                     </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Tool traces - show for API mode */}
+          {!useMock && toolTraces.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>工具调用轨迹</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {toolTraces.map((t, i) => (
+                  <div key={i} className="flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 font-mono text-[11px]">
+                    <Wrench className="h-3 w-3 text-slate-400 shrink-0" />
+                    <span className="text-blue-400 font-semibold">{t.tool_name}</span>
+                    <span className="text-slate-500">&rarr;</span>
+                    <span className="text-slate-300 flex-1 truncate">{t.output_summary}</span>
+                    <span className="text-slate-500 shrink-0">{t.duration_ms}ms</span>
+                    {t.status === "success"
+                      ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      : <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                    }
                   </div>
                 ))}
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Recommended actions */}
           <Card>
@@ -220,7 +327,7 @@ export default function DiagnosisPage() {
               <CardTitle>建议动作</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {incident.recommended_actions.map((a, i) => (
+              {recommendedActions.map((a, i) => (
                 <div
                   key={i}
                   className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5 hover:border-blue-200 hover:bg-blue-50/40 transition-colors group"
@@ -240,42 +347,30 @@ export default function DiagnosisPage() {
           </Card>
         </div>
 
-        {/* ── Right Column: Aux ────────────── */}
+        {/* Right Column: Aux */}
         <div className="w-64 shrink-0 overflow-y-auto space-y-3">
-          {/* Agent trace */}
+          {/* Evidence list */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-1.5">
-                <Wrench className="h-3.5 w-3.5 text-slate-400" /> Agent 轨迹
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1.5">
-              {AGENT_LIST.map((a, i) => (
-                <div key={a.name} className="flex items-center gap-2 py-1 border-b border-slate-50 last:border-0">
-                  <div className="flex items-center justify-center h-5 w-5 rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 shrink-0">
-                    {i + 1}
-                  </div>
-                  <span className="text-xs text-slate-700 flex-1 font-mono">{a.name}</span>
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {/* KB hits */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-1.5">
-                <BookOpen className="h-3.5 w-3.5 text-slate-400" /> 知识库命中
+                <FileText className="h-3.5 w-3.5 text-slate-400" /> 关联证据
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {evidences.filter((e) => e.source_type === "kb").length === 0 ? (
-                <p className="text-xs text-slate-400">无命中结果</p>
-              ) : evidences.filter((e) => e.source_type === "kb").map((e) => (
-                <div key={e.evidence_id} className="evidence-block">
-                  <p className="font-semibold text-slate-700 mb-0.5">{e.summary}</p>
-                  <p className="text-slate-400 mt-1">置信度: {(e.confidence * 100).toFixed(0)}%</p>
+              {evidences.length === 0 ? (
+                <p className="text-xs text-slate-400">暂无关联证据</p>
+              ) : evidences.map((e) => (
+                <div key={e.evidence_id} className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <Badge variant="neutral">{e.source_type}</Badge>
+                    <div className="flex items-center gap-1.5">
+                      <div className="h-1 w-12 rounded-full bg-slate-200 overflow-hidden">
+                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${e.confidence * 100}%` }} />
+                      </div>
+                      <span className="text-[11px] text-slate-500">{(e.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed">{e.summary}</p>
                 </div>
               ))}
             </CardContent>
@@ -300,28 +395,26 @@ export default function DiagnosisPage() {
             </CardContent>
           </Card>
 
-          {/* Evidence list */}
+          {/* KB hits */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-1.5">
-                <FileText className="h-3.5 w-3.5 text-slate-400" /> 关联证据
+                <BookOpen className="h-3.5 w-3.5 text-slate-400" /> 知识库命中
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {evidences.map((e) => (
-                <div key={e.evidence_id} className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <Badge variant="neutral">{e.source_type}</Badge>
-                    <div className="flex items-center gap-1.5">
-                      <div className="h-1 w-12 rounded-full bg-slate-200 overflow-hidden">
-                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${e.confidence * 100}%` }} />
-                      </div>
-                      <span className="text-[11px] text-slate-500">{(e.confidence * 100).toFixed(0)}%</span>
-                    </div>
+            <CardContent>
+              {useMock ? (
+                evidences.filter((e) => e.source_type === "kb").length === 0 ? (
+                  <p className="text-xs text-slate-400">无命中结果</p>
+                ) : evidences.filter((e) => e.source_type === "kb").map((e) => (
+                  <div key={e.evidence_id} className="evidence-block">
+                    <p className="font-semibold text-slate-700 mb-0.5">{e.summary}</p>
+                    <p className="text-slate-400 mt-1">置信度: {(e.confidence * 100).toFixed(0)}%</p>
                   </div>
-                  <p className="text-xs text-slate-700 leading-relaxed">{e.summary}</p>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-xs text-slate-400">无命中结果</p>
+              )}
             </CardContent>
           </Card>
 

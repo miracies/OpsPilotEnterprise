@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AppShell } from "@/components/layout/app-shell";
+import { AuthProvider } from "@/lib/auth";
+import { AuthGuard } from "@/components/layout/auth-guard";
 
 export const metadata: Metadata = {
   title: "OpsPilot Enterprise",
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className="h-full antialiased">
       <body className="h-full font-sans">
-        <AppShell>{children}</AppShell>
+        <AuthProvider>
+          <AuthGuard>{children}</AuthGuard>
+        </AuthProvider>
       </body>
     </html>
   );

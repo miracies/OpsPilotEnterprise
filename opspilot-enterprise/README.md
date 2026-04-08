@@ -35,6 +35,13 @@ API BFF (FastAPI :8000)
 - Pydantic v2 统一 schema
 - httpx 服务间通信
 
+### 大模型
+
+- **智谱 AI GLM-5-turbo** (OpenAI 兼容 API)
+- 支持切换任意 OpenAI 兼容模型（通过环境变量 `LLM_API_BASE` / `LLM_MODEL`）
+- 运维专家 System Prompt + 诊断结构化输出
+- LLM 不可用时自动降级为本地 mock 回复
+
 ### 平台（首期预留）
 
 - OPA 策略中枢
@@ -48,6 +55,25 @@ API BFF (FastAPI :8000)
 - Node.js >= 18 + pnpm >= 8
 - Python >= 3.11
 - (可选) Docker + Docker Compose
+
+### 0. 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入 LLM API Key 等配置
+```
+
+关键配置项：
+
+
+| 变量             | 默认值                                    | 说明                              |
+| -------------- | -------------------------------------- | ------------------------------- |
+| `LLM_ENABLED`  | `true`                                 | 是否启用 LLM，设为 `false` 则使用 mock 回复 |
+| `LLM_API_BASE` | `https://open.bigmodel.cn/api/paas/v4` | LLM API 地址                      |
+| `LLM_API_KEY`  | -                                      | 智谱 AI API Key                   |
+| `LLM_MODEL`    | `glm-5-turbo`                          | 模型名称                            |
+| `JWT_SECRET`   | `opspilot-dev-...`                     | JWT 签名密钥（生产环境请更换）               |
+
 
 ### 1. 安装依赖
 
@@ -113,7 +139,17 @@ uvicorn app.main:app --port 8000 --reload  # API BFF
 cd apps/web && pnpm dev
 ```
 
-访问 [http://localhost:3000](http://localhost:3000)
+访问 [http://localhost:3000](http://localhost:3000) → 自动跳转登录页
+
+#### 演示账号
+
+
+| 用户名        | 密码         | 角色   |
+| ---------- | ---------- | ---- |
+| `admin`    | `admin123` | 管理员  |
+| `zhangsan` | `ops123`   | 运维人员 |
+| `lisi`     | `ops123`   | 运维人员 |
+
 
 ### 4. Docker Compose (一键启动全部)
 
@@ -167,19 +203,34 @@ opspilot-enterprise/
 }
 ```
 
+### 认证接口
+
+
+| 方法   | 路径                    | 说明                         |
+| ---- | --------------------- | -------------------------- |
+| POST | `/api/v1/auth/login`  | 登录（返回 JWT HttpOnly Cookie） |
+| GET  | `/api/v1/auth/me`     | 获取当前用户信息                   |
+| POST | `/api/v1/auth/logout` | 注销                         |
+
+
 ### P0 接口
 
 
-| 方法   | 路径                                    | 说明     |
-| ---- | ------------------------------------- | ------ |
-| POST | `/api/v1/chat/sessions`               | 创建对话   |
-| POST | `/api/v1/chat/sessions/{id}/messages` | 发送消息   |
-| GET  | `/api/v1/incidents`                   | 故障事件列表 |
-| GET  | `/api/v1/incidents/{id}`              | 事件详情   |
-| POST | `/api/v1/incidents/{id}/analyze`      | 触发分析   |
-| POST | `/api/v1/change-impact/analyze`       | 变更影响分析 |
-| GET  | `/api/v1/tools`                       | 工具列表   |
-| GET  | `/api/v1/tools/health`                | 工具健康   |
+| 方法   | 路径                                       | 说明             |
+| ---- | ---------------------------------------- | -------------- |
+| POST | `/api/v1/chat/sessions`                  | 创建对话           |
+| GET  | `/api/v1/chat/sessions`                  | 会话列表           |
+| POST | `/api/v1/chat/sessions/{id}/messages`    | 发送消息（自动检测诊断意图） |
+| GET  | `/api/v1/chat/sessions/{id}/messages`    | 会话消息列表         |
+| GET  | `/api/v1/chat/sessions/{id}/evidence`    | 会话关联证据         |
+| GET  | `/api/v1/chat/sessions/{id}/tool-traces` | 会话工具轨迹         |
+| GET  | `/api/v1/chat/diagnoses/{id}`            | 查询诊断详情         |
+| GET  | `/api/v1/incidents`                      | 故障事件列表         |
+| GET  | `/api/v1/incidents/{id}`                 | 事件详情           |
+| POST | `/api/v1/incidents/{id}/analyze`         | 触发分析           |
+| POST | `/api/v1/change-impact/analyze`          | 变更影响分析         |
+| GET  | `/api/v1/tools`                          | 工具列表           |
+| GET  | `/api/v1/tools/health`                   | 工具健康           |
 
 
 ### P1 接口
@@ -261,9 +312,14 @@ opspilot-enterprise/
 
 ## 演示链路
 
+- **登录诊断闭环**：登录 → AI 对话 → 输入诊断请求 → 查看结构化诊断结果 + 工具轨迹 + 证据 → 跳转诊断工作台
 - **诊断链路**：驾驶舱 → 故障事件 → 诊断工作台 → 变更分析 → 审批中心
 - **治理链路**：审批中心 → 审计中心 → 策略管理 → Agent 视图
 - **知识闭环**：诊断工作台 → 案例归档 → 知识管理 → AI 对话引用
+
+## 演示账号
+
+- **3 个演示账号**：`admin`/`admin123`（管理员）、`zhangsan`/`ops123`、`lisi`/`ops123`（运维人员）
 
 ## 许可证
 

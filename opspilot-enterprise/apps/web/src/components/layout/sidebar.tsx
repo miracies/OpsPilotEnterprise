@@ -20,6 +20,9 @@ import {
   ArrowUpCircle,
   Bot,
   ClipboardList,
+  Wrench,
+  Plug,
+  KeyRound,
 } from "lucide-react";
 
 const navGroups = [
@@ -57,6 +60,9 @@ const navGroups = [
   {
     label: "平台",
     items: [
+      { href: "/tools", label: "Tool Gateway", icon: Wrench },
+      { href: "/connections", label: "资源连接", icon: Plug },
+      { href: "/secrets", label: "密钥管理", icon: KeyRound },
       { href: "/knowledge", label: "知识管理", icon: BookOpen },
       { href: "/policies", label: "策略管理", icon: Lock },
       { href: "/agents", label: "Agent 视图", icon: Bot },
