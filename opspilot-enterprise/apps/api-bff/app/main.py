@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
-    auth, chat, incidents, change_impact, tools, connections, secrets,
+    auth, chat, incidents, change_impact, tools, connections, secrets, resources,
     approvals, notifications, audit, knowledge, policies, cases, agent_runs, upgrades,
 )
 
@@ -35,6 +35,10 @@ app.include_router(change_impact.router, prefix="/api/v1")
 app.include_router(tools.router,         prefix="/api/v1")
 app.include_router(connections.router,   prefix="/api/v1")
 app.include_router(secrets.router,      prefix="/api/v1")
+app.include_router(resources.router,    prefix="/api/v1")
+# #region agent log
+import json as _json_dbg2; open(r"E:\work\git\OpsPilot\debug-ef9114.log","a").write(_json_dbg2.dumps({"sessionId":"ef9114","hypothesisId":"H1","location":"main.py:include_router","message":"resources router included in app","data":{"routes":[r.path for r in resources.router.routes]},"timestamp":__import__("time").time()})+"\n")
+# #endregion
 
 # P1 routes
 app.include_router(approvals.router,     prefix="/api/v1")

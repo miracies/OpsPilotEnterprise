@@ -1,6 +1,7 @@
 """Smoke tests for Chat + Diagnosis flow via BFF."""
 import sys
 import os
+import importlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "shared-schema", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "apps", "api-bff"))
 
@@ -8,8 +9,12 @@ from fastapi.testclient import TestClient
 
 
 def _get_client():
-    from app.main import app
-    return TestClient(app)
+    to_remove = [k for k in sys.modules if k == "app" or k.startswith("app.")]
+    for key in to_remove:
+        del sys.modules[key]
+    import app.main
+    importlib.reload(app.main)
+    return TestClient(app.main.app)
 
 
 def test_create_session():

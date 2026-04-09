@@ -23,7 +23,9 @@ def test_list_tools():
     assert data["success"] is True
     tools = data["data"]
     assert isinstance(tools, list)
-    assert len(tools) >= 8
+    assert len(tools) >= 18
+    assert any(tool["name"] == "vmware.get_vcenter_inventory" for tool in tools)
+    assert any(tool["name"] == "k8s.get_workload_status" for tool in tools)
 
 
 def test_tools_health():

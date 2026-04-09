@@ -407,11 +407,14 @@ export default function ConnectionCenterPage() {
                         </Button>
                       </div>
 
-                      {/* vCenter: real credential inputs */}
-                      {selected.type === "vcenter" && (
+                      {/* Real connectivity test info panel */}
+                      {(selected.type === "vcenter" || selected.type === "kubeconfig") && (
                         <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3 space-y-2">
-                          <p className="text-[11px] font-medium text-blue-700 flex items-center gap-1"><Shield className="h-3 w-3" />vCenter 实时连通性测试</p>
-                          <p className="text-[10px] text-blue-600/70">将对 {selected.endpoint} 进行真实的 DNS、TCP、TLS、REST API 检测。</p>
+                          <p className="text-[11px] font-medium text-blue-700 flex items-center gap-1">
+                            <Shield className="h-3 w-3" />
+                            {selected.type === "vcenter" ? "vCenter" : "Kubernetes"} 实时连通性测试
+                          </p>
+                          <p className="text-[10px] text-blue-600/70">将对 {selected.endpoint} 进行真实的 DNS、TCP、TLS、API 检测。</p>
 
                           {selected.credential_ref?.startsWith("secret://") && (
                             <div className="rounded-md border border-emerald-200 bg-emerald-50/60 px-2.5 py-2 flex items-center gap-2">
@@ -423,28 +426,39 @@ export default function ConnectionCenterPage() {
                             </div>
                           )}
 
-                          <p className="text-[10px] text-slate-500">手动输入凭据（优先级高于自动获取）：</p>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="text-[10px] text-slate-500 mb-0.5 block">用户名</label>
-                              <input
-                                className="form-input text-[12px] h-7"
-                                placeholder="administrator@vsphere.local"
-                                value={testCreds.username}
-                                onChange={e => setTestCreds(p => ({ ...p, username: e.target.value }))}
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[10px] text-slate-500 mb-0.5 block">密码</label>
-                              <input
-                                className="form-input text-[12px] h-7"
-                                type="password"
-                                placeholder="••••••••"
-                                value={testCreds.password}
-                                onChange={e => setTestCreds(p => ({ ...p, password: e.target.value }))}
-                              />
-                            </div>
-                          </div>
+                          {selected.type === "vcenter" && (
+                            <>
+                              <p className="text-[10px] text-slate-500">手动输入凭据（优先级高于自动获取）：</p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className="text-[10px] text-slate-500 mb-0.5 block">用户名</label>
+                                  <input
+                                    className="form-input text-[12px] h-7"
+                                    placeholder="administrator@vsphere.local"
+                                    value={testCreds.username}
+                                    onChange={e => setTestCreds(p => ({ ...p, username: e.target.value }))}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-slate-500 mb-0.5 block">密码</label>
+                                  <input
+                                    className="form-input text-[12px] h-7"
+                                    type="password"
+                                    placeholder="••••••••"
+                                    value={testCreds.password}
+                                    onChange={e => setTestCreds(p => ({ ...p, password: e.target.value }))}
+                                  />
+                                </div>
+                              </div>
+                            </>
+                          )}
+
+                          {selected.type === "kubeconfig" && !selected.credential_ref?.startsWith("secret://") && (
+                            <p className="text-[10px] text-amber-600 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" />
+                              请先在密钥管理中创建 kubeconfig 密钥，然后编辑此连接将凭据引用改为 <code className="font-mono bg-amber-50 px-0.5 rounded">secret://&lt;密钥名称&gt;</code>
+                            </p>
+                          )}
                         </div>
                       )}
 

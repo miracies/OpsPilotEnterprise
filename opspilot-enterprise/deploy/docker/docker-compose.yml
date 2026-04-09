@@ -46,6 +46,7 @@ services:
       - "8020:8020"
     environment:
       VMWARE_GATEWAY_URL: http://vmware-gateway:8030
+      KUBERNETES_GATEWAY_URL: http://kubernetes-gateway:8080
       CHANGE_IMPACT_URL: http://change-impact:8040
       GOVERNANCE_SERVICE_URL: http://governance:8071
 
@@ -55,6 +56,13 @@ services:
       dockerfile: services/vmware-skill-gateway/Dockerfile
     ports:
       - "8030:8030"
+
+  kubernetes-gateway:
+    build:
+      context: ../../
+      dockerfile: services/kubernetes-skill-gateway/Dockerfile
+    ports:
+      - "8080:8080"
 
   change-impact:
     build:

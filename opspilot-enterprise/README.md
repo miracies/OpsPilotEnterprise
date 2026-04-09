@@ -15,6 +15,7 @@ API BFF (FastAPI :8000)
     │        ▼
     │    Tool Gateway (:8020)
     │        ├──► VMware Skill Gateway (:8030)
+    │        ├──► Kubernetes Skill Gateway (:8080)
     │        ├──► Change Impact Service (:8040)
     │        └──► Evidence Aggregator (:8050)
     │
@@ -66,13 +67,16 @@ cp .env.example .env
 关键配置项：
 
 
-| 变量             | 默认值                                    | 说明                              |
-| -------------- | -------------------------------------- | ------------------------------- |
-| `LLM_ENABLED`  | `true`                                 | 是否启用 LLM，设为 `false` 则使用 mock 回复 |
-| `LLM_API_BASE` | `https://open.bigmodel.cn/api/paas/v4` | LLM API 地址                      |
-| `LLM_API_KEY`  | -                                      | 智谱 AI API Key                   |
-| `LLM_MODEL`    | `glm-5-turbo`                          | 模型名称                            |
-| `JWT_SECRET`   | `opspilot-dev-...`                     | JWT 签名密钥（生产环境请更换）               |
+| 变量                    | 默认值                                    | 说明                               |
+| --------------------- | -------------------------------------- | -------------------------------- |
+| `LLM_ENABLED`         | `true`                                 | 是否启用 LLM，设为 `false` 则使用 mock 回复  |
+| `LLM_API_BASE`        | `https://open.bigmodel.cn/api/paas/v4` | LLM API 地址                       |
+| `LLM_API_KEY`         | -                                      | 智谱 AI API Key                    |
+| `LLM_MODEL`           | `glm-5-turbo`                          | 模型名称                             |
+| `JWT_SECRET`          | `opspilot-dev-...`                     | JWT 签名密钥（生产环境请更换）                |
+| `OPSPILOT_SECRET_KEY` | `change-me-for-production`             | 本地 AES-256 密钥库主密码                |
+| `OPSPILOT_SECRET_DB`  | `data/secrets.db`                      | 密钥库 SQLite 路径                    |
+| `RESOURCE_BFF_URL`    | `http://127.0.0.1:8000`                | Orchestrator 读取真实资源总览时调用的 BFF 地址 |
 
 
 ### 1. 安装依赖
@@ -87,6 +91,7 @@ pip install -e packages/shared-schema
 # P0 服务
 pip install -e services/tool-gateway --no-deps
 pip install -e services/vmware-skill-gateway --no-deps
+pip install -e services/kubernetes-skill-gateway --no-deps
 pip install -e services/change-impact-service --no-deps
 pip install -e services/evidence-aggregator --no-deps
 pip install -e services/event-ingestion-service --no-deps
@@ -120,6 +125,7 @@ bash scripts/dev-backend.sh
 # P0 services
 uvicorn app.main:app --port 8020 --reload  # Tool Gateway
 uvicorn app.main:app --port 8030 --reload  # VMware Gateway
+uvicorn app.main:app --port 8080 --reload  # Kubernetes Gateway
 uvicorn app.main:app --port 8040 --reload  # Change Impact
 uvicorn app.main:app --port 8050 --reload  # Evidence Aggregator
 uvicorn app.main:app --port 8060 --reload  # Event Ingestion
@@ -168,7 +174,8 @@ opspilot-enterprise/
 ├── services/
 │   ├── langgraph-orchestrator/       # Agent 编排服务
 │   ├── tool-gateway/                 # 统一工具控制面
-│   ├── vmware-skill-gateway/         # VMware 领域服务 (mock)
+│   ├── vmware-skill-gateway/         # VMware 领域服务（支持真实 vCenter）
+│   ├── kubernetes-skill-gateway/     # Kubernetes 领域服务（支持真实 kubeconfig）
 │   ├── change-impact-service/        # 变更影响分析
 │   ├── evidence-aggregator/          # 证据聚合
 │   ├── event-ingestion-service/      # 事件接入
@@ -231,6 +238,10 @@ opspilot-enterprise/
 | POST | `/api/v1/change-impact/analyze`          | 变更影响分析         |
 | GET  | `/api/v1/tools`                          | 工具列表           |
 | GET  | `/api/v1/tools/health`                   | 工具健康           |
+| GET  | `/api/v1/resources/vcenter/overview`     | vCenter 资源总览   |
+| GET  | `/api/v1/resources/vcenter/inventory`    | vCenter 资源清单   |
+| GET  | `/api/v1/resources/k8s/overview`         | K8s 资源总览       |
+| GET  | `/api/v1/resources/k8s/workloads`        | K8s 工作负载状态     |
 
 
 ### P1 接口

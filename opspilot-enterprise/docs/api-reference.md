@@ -30,6 +30,7 @@
 | Change Impact Service | 8040 | ??????????????? |
 | Evidence Aggregator | 8050 | ?????? |
 | Event Ingestion Service | 8060 | ????????? |
+| Kubernetes Skill Gateway | 8080 | Kubernetes ??????? |
 
 ---
 
@@ -95,6 +96,20 @@ GET /api/v1/tools/health
 Response: [ToolHealthStatus]
 ```
 
+### Resources
+
+```
+GET /api/v1/resources/vcenter/overview?connection_id=conn-vcenter-prod
+GET /api/v1/resources/vcenter/inventory?connection_id=conn-vcenter-prod
+GET /api/v1/resources/k8s/overview?connection_id=conn-k8s-staging
+GET /api/v1/resources/k8s/workloads?connection_id=conn-k8s-staging&namespace=default
+```
+
+????????:
+- BFF ??? `connection profile + secret://` ???????
+- ????? Tool Gateway ????? VMware / Kubernetes gateway
+- Orchestrator ??????? BFF resources API ??????????
+
 ---
 
 ## Tool Gateway (Port 8020)
@@ -121,6 +136,7 @@ Response Headers: X-Request-Id, X-Trace-Id
 
 ???????????
 - `vmware.*` ??? VMware Skill Gateway
+- `k8s.*` ??? Kubernetes Skill Gateway
 - `change_impact.*` ??? Change Impact Service
 - ????? ??? mock ?????
 
@@ -141,6 +157,31 @@ POST /api/v1/query/query_events         Body: { "object_id": "string", "hours": 
 POST /api/v1/query/query_metrics        Body: { "object_id": "string", "metric": "string" }
 POST /api/v1/query/query_alerts
 POST /api/v1/query/query_topology
+```
+
+### ???? invoke ??
+
+```
+POST /api/v1/invoke/vmware.get_vcenter_inventory
+Body: { "input": { "connection": { "endpoint": "...", "username": "...", "password": "..." } }, "dry_run": false }
+```
+
+---
+
+## Kubernetes Skill Gateway (Port 8080)
+
+```
+POST /api/v1/query/list_nodes
+POST /api/v1/query/list_namespaces
+POST /api/v1/query/list_pods          Body: { "namespace": "default", "connection": {...} }
+POST /api/v1/query/get_pod_logs       Body: { "namespace": "default", "pod_name": "api-0", "connection": {...} }
+POST /api/v1/query/get_workload_status Body: { "namespace": "default", "connection": {...} }
+
+POST /api/v1/execute/restart_deployment
+Body: { "namespace": "default", "deployment_name": "web", "connection": {...}, "dry_run": false }
+
+POST /api/v1/invoke/k8s.get_workload_status
+Body: { "input": { "connection": { "kubeconfig": {...} }, "namespace": "default" }, "dry_run": false }
 ```
 
 ### ?????
@@ -349,11 +390,11 @@ Response: AI ??????????
 
 #### PATCH /api/v1/policies/{id}/toggle
 
-????/??ò????
+????/??ï¿½????
 
 #### GET /api/v1/policies/{id}/hits
 
-?????????¼?????
+?????????ï¿½?????
 
 ---
 
@@ -385,7 +426,7 @@ Agent ???????????? status/incident_ref ????
 
 #### GET /api/v1/upgrades/deployments/history
 
-?????????¼?????????????
+?????????ï¿½?????????????
 
 ---
 

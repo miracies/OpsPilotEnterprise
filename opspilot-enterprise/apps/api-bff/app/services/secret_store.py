@@ -7,7 +7,6 @@ The encryption key is derived from a master passphrase via PBKDF2-HMAC-SHA256.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import os
@@ -20,6 +19,7 @@ from typing import Any
 # ── AES-256-GCM via cryptography ─────────────────────────────
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import yaml
 
 _KDF_ITERATIONS = 480_000
 _SALT_BYTES = 16
@@ -33,6 +33,52 @@ _MASTER_PASSPHRASE: str = os.environ.get(
 DB_PATH: Path = Path(
     os.environ.get("OPSPILOT_SECRET_DB", "data/secrets.db")
 )
+
+_SEED_SECRETS: list[dict[str, str]] = [
+    {
+        "name": "vcenter-prod",
+        "display_name": "vCenter 生产环境凭据",
+        "secret_type": "vcenter",
+        "value": json.dumps(
+            {"username": "administrator@vsphere.local", "password": "ChangeMe-Prod!"},
+            ensure_ascii=False,
+        ),
+        "description": "示例 vCenter 凭据，请替换为真实账号密码",
+    },
+    {
+        "name": "vcenter-dr",
+        "display_name": "vCenter 灾备环境凭据",
+        "secret_type": "vcenter",
+        "value": json.dumps(
+            {"username": "administrator@vsphere.local", "password": "ChangeMe-DR!"},
+            ensure_ascii=False,
+        ),
+        "description": "示例灾备 vCenter 凭据，请替换为真实账号密码",
+    },
+    {
+        "name": "k8s-staging",
+        "display_name": "K8s 测试集群 kubeconfig",
+        "secret_type": "kubeconfig",
+        "value": """apiVersion: v1
+kind: Config
+clusters:
+  - name: opspilot-staging
+    cluster:
+      server: https://k8s-staging.corp.local:6443
+users:
+  - name: opspilot
+    user:
+      token: replace-me
+contexts:
+  - name: opspilot-staging
+    context:
+      cluster: opspilot-staging
+      user: opspilot
+current-context: opspilot-staging
+""",
+        "description": "示例 kubeconfig，请替换为真实集群配置",
+    },
+]
 
 
 def _derive_key(passphrase: str, salt: bytes) -> bytes:
@@ -107,7 +153,38 @@ def _row_to_meta(row: sqlite3.Row) -> dict[str, Any]:
 
 async def init_db() -> None:
     """Ensure the DB and table exist (called at app startup)."""
-    await asyncio.to_thread(_get_conn)
+    def _run():
+        conn = _get_conn()
+        for seed in _SEED_SECRETS:
+            exists = conn.execute(
+                "SELECT 1 FROM secrets WHERE name = ?",
+                (seed["name"],),
+            ).fetchone()
+            if exists:
+                continue
+            ct, iv, salt = _encrypt(seed["value"])
+            now = _now()
+            conn.execute(
+                "INSERT INTO secrets (id, name, display_name, secret_type, encrypted_val, iv, salt, description, tags, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"sec-{uuid.uuid4().hex[:8]}",
+                    seed["name"],
+                    seed["display_name"],
+                    seed["secret_type"],
+                    ct,
+                    iv,
+                    salt,
+                    seed["description"],
+                    json.dumps(["seed", seed["secret_type"]]),
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+    await asyncio.to_thread(_run)
 
 
 async def list_secrets() -> list[dict[str, Any]]:
@@ -222,7 +299,89 @@ async def reveal_secret(name: str) -> str | None:
     return await asyncio.to_thread(_run)
 
 
-async def resolve_credential(ref: str) -> dict[str, str] | None:
+def parse_secret_payload(secret_type: str, raw: str) -> dict[str, Any]:
+    raw = raw.strip()
+    parsed: Any = None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        if secret_type == "kubeconfig":
+            try:
+                parsed = yaml.safe_load(raw)
+            except yaml.YAMLError:
+                parsed = None
+        else:
+            parsed = None
+
+    if parsed is None:
+        parsed = {"value": raw}
+
+    if secret_type == "vcenter":
+        if not isinstance(parsed, dict):
+            raise ValueError("vCenter 密钥必须是 JSON 对象")
+        username = parsed.get("username")
+        password = parsed.get("password")
+        if not username or not password:
+            raise ValueError("vCenter 密钥必须包含 username 和 password")
+        return {
+            "secret_type": "vcenter",
+            "username": str(username),
+            "password": str(password),
+        }
+
+    if secret_type == "kubeconfig":
+        if isinstance(parsed, dict) and "kubeconfig" in parsed:
+            kubeconfig_raw = parsed["kubeconfig"]
+            if isinstance(kubeconfig_raw, dict):
+                kubeconfig = kubeconfig_raw
+            else:
+                kubeconfig = yaml.safe_load(str(kubeconfig_raw))
+            if not isinstance(kubeconfig, dict):
+                raise ValueError("kubeconfig 内容无效")
+            return {
+                "secret_type": "kubeconfig",
+                "kubeconfig": kubeconfig,
+            }
+
+        if isinstance(parsed, dict) and {"apiVersion", "clusters", "contexts", "users"}.intersection(parsed.keys()):
+            return {
+                "secret_type": "kubeconfig",
+                "kubeconfig": parsed,
+            }
+
+        if isinstance(parsed, dict) and any(k in parsed for k in ("token", "api_key", "bearer_token")):
+            return {
+                "secret_type": "kubeconfig",
+                "token": parsed.get("token") or parsed.get("api_key") or parsed.get("bearer_token"),
+                "server": parsed.get("server"),
+                "ca_cert": parsed.get("ca_cert"),
+                "namespace": parsed.get("namespace"),
+            }
+
+        raise ValueError("Kubernetes 密钥必须是 kubeconfig YAML/JSON 或包含 token 的 JSON")
+
+    if isinstance(parsed, dict):
+        return {"secret_type": secret_type, **parsed}
+    return {"secret_type": secret_type, "value": raw}
+
+
+async def get_secret_payload(name: str) -> dict[str, Any] | None:
+    def _run():
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT secret_type, encrypted_val, iv, salt FROM secrets WHERE name = ?",
+            (name,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        raw = _decrypt(bytes(row["encrypted_val"]), bytes(row["iv"]), bytes(row["salt"]))
+        return parse_secret_payload(str(row["secret_type"]), raw)
+
+    return await asyncio.to_thread(_run)
+
+
+async def resolve_credential(ref: str) -> dict[str, Any] | None:
     """
     Resolve a credential_ref to a dict of credentials.
 
@@ -239,11 +398,16 @@ async def resolve_credential(ref: str) -> dict[str, str] | None:
     """
     if ref.startswith("secret://"):
         secret_name = ref[len("secret://"):]
-        raw = await reveal_secret(secret_name)
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"value": raw}
+        # Environment override for vCenter credentials so runtime can use real
+        # credentials even when seeded demo secrets already exist in SQLite.
+        if secret_name.startswith("vcenter"):
+            env_username = os.environ.get("VCENTER_USERNAME")
+            env_password = os.environ.get("VCENTER_PASSWORD")
+            if env_username and env_password:
+                return {
+                    "secret_type": "vcenter",
+                    "username": env_username,
+                    "password": env_password,
+                }
+        return await get_secret_payload(secret_name)
     return None

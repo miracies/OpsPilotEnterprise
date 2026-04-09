@@ -14,6 +14,8 @@ from opspilot_schema import make_error, make_success
 router = APIRouter(prefix="/invoke")
 
 VMWARE_GATEWAY_URL = os.environ.get("VMWARE_GATEWAY_URL", "http://localhost:8030")
+VMWARE_GATEWAY_FALLBACK_URL = os.environ.get("VMWARE_GATEWAY_FALLBACK_URL", "http://127.0.0.1:18030")
+KUBERNETES_GATEWAY_URL = os.environ.get("KUBERNETES_GATEWAY_URL", "http://localhost:8080")
 CHANGE_IMPACT_URL = os.environ.get("CHANGE_IMPACT_URL", "http://localhost:8040")
 
 
@@ -34,6 +36,10 @@ async def invoke_tool(tool_name: str, body: InvokeBody, response: Response) -> d
 
     if tool_name.startswith("vmware."):
         url = f"{VMWARE_GATEWAY_URL.rstrip('/')}/api/v1/invoke/{safe_path}"
+        return await _forward_or_fail(url, payload, request_id, trace_id)
+
+    if tool_name.startswith("k8s."):
+        url = f"{KUBERNETES_GATEWAY_URL.rstrip('/')}/api/v1/invoke/{safe_path}"
         return await _forward_or_fail(url, payload, request_id, trace_id)
 
     if tool_name.startswith("change_impact."):
@@ -61,20 +67,68 @@ async def _forward_or_fail(
         "Content-Type": "application/json",
     }
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:
             r = await client.post(url, json=payload, headers=headers)
     except httpx.RequestError as e:
-        return make_error(
-            error=f"upstream request failed: {e}",
-            request_id=request_id,
-            trace_id=trace_id,
-        )
+        if "/invoke/vmware." in url and VMWARE_GATEWAY_FALLBACK_URL:
+            fallback_url = url.replace(
+                VMWARE_GATEWAY_URL.rstrip("/"),
+                VMWARE_GATEWAY_FALLBACK_URL.rstrip("/"),
+                1,
+            )
+            try:
+                async with httpx.AsyncClient(timeout=180.0) as client:
+                    r = await client.post(fallback_url, json=payload, headers=headers)
+            except httpx.RequestError:
+                return make_error(
+                    error=f"upstream request failed: {e}",
+                    request_id=request_id,
+                    trace_id=trace_id,
+                )
+        else:
+            return make_error(
+                error=f"upstream request failed: {e}",
+                request_id=request_id,
+                trace_id=trace_id,
+            )
 
     try:
         body = r.json()
     except ValueError:
+        if "/invoke/vmware." in url and VMWARE_GATEWAY_FALLBACK_URL:
+            fallback_url = url.replace(
+                VMWARE_GATEWAY_URL.rstrip("/"),
+                VMWARE_GATEWAY_FALLBACK_URL.rstrip("/"),
+                1,
+            )
+            try:
+                async with httpx.AsyncClient(timeout=180.0) as client:
+                    r2 = await client.post(fallback_url, json=payload, headers=headers)
+                body2 = r2.json()
+                if isinstance(body2, dict) and all(
+                    k in body2 for k in ("request_id", "success", "message", "timestamp")
+                ):
+                    body2 = {**body2, "request_id": request_id, "trace_id": trace_id}
+                    return body2
+                if r2.is_success:
+                    return make_success(
+                        data=body2 if body2 is not None else {},
+                        request_id=request_id,
+                        trace_id=trace_id,
+                    )
+                return make_error(
+                    error=body2.get("error") if isinstance(body2, dict) else str(body2),
+                    request_id=request_id,
+                    trace_id=trace_id,
+                )
+            except Exception:
+                pass
+        upstream_preview = (r.text or "").strip()[:1024]
         return make_error(
-            error=f"upstream returned non-JSON (status {r.status_code})",
+            error=(
+                f"upstream returned non-JSON (status {r.status_code}); "
+                f"body_preview={upstream_preview!r}"
+            ),
             request_id=request_id,
             trace_id=trace_id,
         )

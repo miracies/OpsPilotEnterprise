@@ -61,6 +61,7 @@ async def secret_stats():
 @router.post("")
 async def create_secret_route(body: CreateSecretBody):
     try:
+        secret_store.parse_secret_payload(body.secret_type, body.value)
         meta = await secret_store.create_secret(
             name=body.name,
             plaintext_value=body.value,
@@ -86,16 +87,22 @@ async def get_secret_route(name: str):
 
 @router.put("/{name}")
 async def update_secret_route(name: str, body: UpdateSecretBody):
-    result = await secret_store.update_secret(
-        name=name,
-        plaintext_value=body.value,
-        display_name=body.display_name,
-        description=body.description,
-        tags=body.tags,
-    )
-    if not result:
-        return make_error(f"密钥 '{name}' 不存在")
-    return make_success(result)
+    try:
+        current = await secret_store.get_secret_meta(name)
+        if not current:
+            return make_error(f"密钥 '{name}' 不存在")
+        if body.value is not None:
+            secret_store.parse_secret_payload(current["secret_type"], body.value)
+        result = await secret_store.update_secret(
+            name=name,
+            plaintext_value=body.value,
+            display_name=body.display_name,
+            description=body.description,
+            tags=body.tags,
+        )
+        return make_success(result)
+    except Exception as exc:
+        return make_error(str(exc))
 
 
 @router.delete("/{name}")

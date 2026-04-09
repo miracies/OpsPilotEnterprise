@@ -7,22 +7,15 @@ from opspilot_schema.envelope import make_success
 from app.routers import execute, invoke, query
 
 CAPABILITY_TOOLS = [
-    "get_vcenter_inventory",
-    "get_vm_detail",
-    "get_host_detail",
-    "get_cluster_detail",
-    "query_events",
-    "query_metrics",
-    "query_alerts",
-    "query_topology",
-    "create_snapshot",
-    "vm_migrate",
-    "vm_power_on",
-    "vm_power_off",
-    "vm_guest_restart",
+    "k8s.list_nodes",
+    "k8s.list_namespaces",
+    "k8s.list_pods",
+    "k8s.get_pod_logs",
+    "k8s.get_workload_status",
+    "k8s.restart_deployment",
 ]
 
-app = FastAPI(title="OpsPilot VMware Skill Gateway")
+app = FastAPI(title="OpsPilot Kubernetes Skill Gateway")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +30,7 @@ api_v1 = APIRouter(prefix="/api/v1")
 
 @api_v1.get("/health")
 def health() -> dict:
-    return make_success({"status": "healthy", "service": "vmware-skill-gateway"})
+    return make_success({"status": "healthy", "service": "kubernetes-skill-gateway"})
 
 
 @api_v1.get("/capabilities")

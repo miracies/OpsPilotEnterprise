@@ -1,6 +1,7 @@
 """Resource Connection Center endpoints."""
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -8,12 +9,38 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from opspilot_schema.envelope import make_success, make_error
+from app.services.secret_store import resolve_credential
 
 router = APIRouter(prefix="/connections", tags=["connections"])
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_connection(conn_id: str) -> dict[str, Any] | None:
+    return next((c for c in MOCK_CONNECTIONS if c["id"] == conn_id), None)
+
+
+def _get_default_connection(conn_type: str) -> dict[str, Any] | None:
+    return next((c for c in MOCK_CONNECTIONS if c["type"] == conn_type), None)
+
+
+async def resolve_connection_context(
+    conn_id: str | None = None,
+    conn_type: str | None = None,
+) -> dict[str, Any] | None:
+    conn = _get_connection(conn_id) if conn_id else (_get_default_connection(conn_type) if conn_type else None)
+    if not conn:
+        return None
+    resolved_creds = None
+    cred_ref = conn.get("credential_ref", "")
+    if cred_ref.startswith("secret://"):
+        resolved_creds = await resolve_credential(cred_ref)
+    return {
+        "connection": conn,
+        "credentials": resolved_creds,
+    }
 
 
 # ── Category labels ──────────────────────────────────────────
@@ -33,6 +60,9 @@ CATEGORIES = {
 }
 
 # ── Mock connections ─────────────────────────────────────────
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://vcenter-prod.corp.local:443/sdk")
+VCENTER_DR_ENDPOINT = os.environ.get("VCENTER_DR_ENDPOINT", "https://vcenter-dr.corp.local:443/sdk")
+
 MOCK_CONNECTIONS: list[dict[str, Any]] = [
     {
         "id": "conn-vcenter-prod",
@@ -40,9 +70,9 @@ MOCK_CONNECTIONS: list[dict[str, Any]] = [
         "display_name": "vCenter 生产环境",
         "type": "vcenter",
         "category": "VMware vCenter",
-        "endpoint": "https://vcenter-prod.corp.local:443/sdk",
+        "endpoint": VCENTER_ENDPOINT,
         "scope": "Datacenter: DC-01, DC-02",
-        "credential_ref": "vault://secret/vcenter/prod",
+        "credential_ref": "secret://vcenter-prod",
         "proxy_config": None,
         "status": "active",
         "enabled": True,
@@ -62,9 +92,9 @@ MOCK_CONNECTIONS: list[dict[str, Any]] = [
         "display_name": "vCenter 灾备环境",
         "type": "vcenter",
         "category": "VMware vCenter",
-        "endpoint": "https://vcenter-dr.corp.local:443/sdk",
+        "endpoint": VCENTER_DR_ENDPOINT,
         "scope": "Datacenter: DC-DR",
-        "credential_ref": "vault://secret/vcenter/dr",
+        "credential_ref": "secret://vcenter-dr",
         "proxy_config": "jumphost: bastion-dr.corp.local:22",
         "status": "active",
         "enabled": True,
@@ -218,7 +248,7 @@ MOCK_CONNECTIONS: list[dict[str, Any]] = [
         "category": "Kubernetes",
         "endpoint": "https://k8s-staging.corp.local:6443",
         "scope": "Namespace: opspilot-test, default",
-        "credential_ref": "vault://secret/k8s/staging-kubeconfig",
+        "credential_ref": "secret://k8s-staging",
         "proxy_config": None,
         "status": "inactive",
         "enabled": False,
@@ -324,6 +354,11 @@ class RetentionBody(BaseModel):
 
 # ── Routes ───────────────────────────────────────────────────
 
+def _validate_connection_payload(conn_type: str, credential_ref: str) -> str | None:
+    if conn_type in {"vcenter", "kubeconfig"} and credential_ref and not credential_ref.startswith("secret://"):
+        return f"{conn_type} 连接必须使用 secret:// 凭据引用"
+    return None
+
 @router.get("")
 async def list_connections(
     type: Optional[str] = Query(None),
@@ -400,6 +435,9 @@ async def get_connection(conn_id: str):
 
 @router.post("")
 async def create_connection(body: CreateConnectionBody):
+    err = _validate_connection_payload(body.type, body.credential_ref)
+    if err:
+        return make_error(err)
     new_id = f"conn-{body.name}"
     conn = {
         "id": new_id,
@@ -443,11 +481,17 @@ async def toggle_connection(conn_id: str, body: ToggleConnectionBody):
 
 @router.post("/{conn_id}/test")
 async def test_connection(conn_id: str, body: Optional[TestConnectionBody] = None):
-    conn = next((c for c in MOCK_CONNECTIONS if c["id"] == conn_id), None)
+    conn = _get_connection(conn_id)
     if not conn:
         return make_error(f"Connection {conn_id} not found")
 
     conn_type = conn.get("type", "")
+
+    # Auto-resolve credentials from secret store
+    cred_ref = conn.get("credential_ref", "")
+    resolved_creds: dict | None = None
+    if cred_ref.startswith("secret://"):
+        resolved_creds = await resolve_credential(cred_ref)
 
     if conn_type == "vcenter":
         from app.services.connectivity_tester import test_vcenter_connection
@@ -455,17 +499,19 @@ async def test_connection(conn_id: str, body: Optional[TestConnectionBody] = Non
         username = body.username if body else None
         password = body.password if body else None
 
-        # Auto-resolve from secret store if no explicit credentials provided
-        if not username and not password:
-            cred_ref = conn.get("credential_ref", "")
-            if cred_ref.startswith("secret://"):
-                from app.services.secret_store import resolve_credential
-                creds = await resolve_credential(cred_ref)
-                if creds:
-                    username = creds.get("username")
-                    password = creds.get("password")
+        if not username and not password and resolved_creds:
+            username = resolved_creds.get("username")
+            password = resolved_creds.get("password")
 
         checks = await test_vcenter_connection(conn["endpoint"], username, password)
+        is_ok = all(c["passed"] for c in checks)
+        latency = sum(c["duration_ms"] for c in checks)
+    elif conn_type == "kubeconfig":
+        from app.services.connectivity_tester import test_k8s_connection
+
+        kubeconfig_json = resolved_creds
+
+        checks = await test_k8s_connection(conn["endpoint"], kubeconfig_json)
         is_ok = all(c["passed"] for c in checks)
         latency = sum(c["duration_ms"] for c in checks)
     else:
@@ -504,6 +550,11 @@ async def test_connection(conn_id: str, body: Optional[TestConnectionBody] = Non
 async def update_connection(conn_id: str, body: UpdateConnectionBody):
     for c in MOCK_CONNECTIONS:
         if c["id"] == conn_id:
+            next_type = c["type"]
+            next_ref = body.credential_ref if body.credential_ref is not None else c.get("credential_ref", "")
+            err = _validate_connection_payload(next_type, next_ref)
+            if err:
+                return make_error(err)
             changes: list[str] = []
             for field in ("display_name", "endpoint", "scope", "credential_ref", "proxy_config", "description", "tags"):
                 val = getattr(body, field, None)

@@ -284,3 +284,110 @@ async def test_vcenter_connection(
         })
 
     return checks
+
+
+# ── Kubernetes specific checks ───────────────────────────────
+
+async def _check_k8s_api(
+    base_url: str,
+    kubeconfig_json: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Probe K8s API server via /version, /api, /healthz."""
+    t = time.monotonic()
+    headers: dict[str, str] = {}
+    if kubeconfig_json:
+        token = kubeconfig_json.get("token") or kubeconfig_json.get("api_key") or kubeconfig_json.get("bearer_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+    async with httpx.AsyncClient(verify=False, timeout=timeout, follow_redirects=True) as client:
+        for path in ("/version", "/api", "/healthz"):
+            try:
+                resp = await client.get(f"{base_url}{path}", headers=headers)
+                if resp.status_code < 500:
+                    return {
+                        "name": "k8s_api",
+                        "passed": True,
+                        "message": f"K8s API 可达 ({path}) · HTTP {resp.status_code}",
+                        "duration_ms": _ms(t),
+                    }
+            except Exception:
+                continue
+
+    return {
+        "name": "k8s_api",
+        "passed": False,
+        "message": f"K8s API 不可达: {base_url}/version, /api, /healthz 均无响应",
+        "duration_ms": _ms(t),
+    }
+
+
+async def _check_k8s_auth(
+    base_url: str,
+    kubeconfig_json: dict[str, Any],
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Authenticate to K8s via bearer token, test against /api/v1/namespaces."""
+    t = time.monotonic()
+    token = (
+        kubeconfig_json.get("token")
+        or kubeconfig_json.get("api_key")
+        or kubeconfig_json.get("bearer_token")
+    )
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    async with httpx.AsyncClient(verify=False, timeout=timeout, follow_redirects=True) as client:
+        try:
+            resp = await client.get(f"{base_url}/api/v1/namespaces", headers=headers)
+            if resp.status_code == 200:
+                return {"name": "k8s_auth", "passed": True, "message": "K8s 认证成功（Bearer Token）", "duration_ms": _ms(t)}
+            elif resp.status_code == 401:
+                return {"name": "k8s_auth", "passed": False, "message": "K8s 认证失败: Token 无效或过期 (HTTP 401)", "duration_ms": _ms(t)}
+            elif resp.status_code == 403:
+                return {"name": "k8s_auth", "passed": True, "message": "K8s 认证成功（Token 有效但权限不足，HTTP 403）", "duration_ms": _ms(t)}
+            else:
+                return {"name": "k8s_auth", "passed": False, "message": f"K8s 认证异常: HTTP {resp.status_code}", "duration_ms": _ms(t)}
+        except Exception as exc:
+            return {"name": "k8s_auth", "passed": False, "message": f"K8s 认证请求失败: {exc}", "duration_ms": _ms(t)}
+
+
+async def test_k8s_connection(
+    endpoint: str,
+    kubeconfig_json: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Full K8s connectivity test: DNS → TCP → TLS → API probe → Auth.
+    """
+    host, port = _parse_host_port(endpoint, default_port=6443)
+    checks: list[dict[str, Any]] = []
+
+    dns = await _check_dns(host)
+    checks.append(dns)
+    if not dns["passed"]:
+        return checks
+
+    tcp = await _check_tcp(host, port)
+    checks.append(tcp)
+    if not tcp["passed"]:
+        return checks
+
+    tls = await _check_tls(host, port)
+    checks.append(tls)
+
+    parsed = urlparse(endpoint)
+    scheme = parsed.scheme or "https"
+    port_str = f":{port}" if parsed.port else ""
+    base_url = f"{scheme}://{parsed.hostname}{port_str}"
+    api = await _check_k8s_api(base_url, kubeconfig_json)
+    checks.append(api)
+
+    if kubeconfig_json and (kubeconfig_json.get("token") or kubeconfig_json.get("api_key") or kubeconfig_json.get("bearer_token")):
+        auth = await _check_k8s_auth(base_url, kubeconfig_json)
+        checks.append(auth)
+    else:
+        checks.append({"name": "k8s_auth", "passed": True, "message": "认证检查跳过（未提供 Token 凭据）", "duration_ms": 0})
+
+    return checks

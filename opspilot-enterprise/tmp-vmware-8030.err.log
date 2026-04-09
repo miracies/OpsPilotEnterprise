@@ -1,0 +1,38 @@
+=false : 无法将“=false”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。请检查名称的拼写，如果包括路径，请确保路径
+正确，然后再试一次。
+所在位置 行:1 字符: 1
++ ='false'; ='https://192.168.1.16:443/sdk'; ='administrator@vsphere.lo ...
++ ~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=false:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 
+=https://192.168.1.16:443/sdk : 无法将“=https://192.168.1.16:443/sdk”项识别为 cmdlet、函数、脚本文件或可运行程序的名
+称。请检查名称的拼写，如果包括路径，请确保路径正确，然后再试一次。
+所在位置 行:1 字符: 11
++ ='false'; ='https://192.168.1.16:443/sdk'; ='administrator@vsphere.lo ...
++           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=https://192.168.1.16:443/sdk:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 
+=administrator@vsphere.local : 无法将“=administrator@vsphere.local”项识别为 cmdlet、函数、脚本文件或可运行程序的名称
+。请检查名称的拼写，如果包括路径，请确保路径正确，然后再试一次。
+所在位置 行:1 字符: 44
++ ... https://192.168.1.16:443/sdk'; ='administrator@vsphere.local'; ='P@ss ...
++                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=administrator@vsphere.local:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 
+=P@ssw0rd : 无法将“=P@ssw0rd”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。请检查名称的拼写，如果包括路径，请确
+保路径正确，然后再试一次。
+所在位置 行:1 字符: 76
++ ... 68.1.16:443/sdk'; ='administrator@vsphere.local'; ='P@ssw0rd'; & 'C:\ ...
++                                                       ~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=P@ssw0rd:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 
+INFO:     Started server process [103072]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 10048] error while attempting to bind on address ('0.0.0.0', 8030): [winerror 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.

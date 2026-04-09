@@ -34,10 +34,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="OpsPilot LangGraph Orchestrator")
 
-TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8030")
+TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
 CHANGE_IMPACT_SERVICE_URL = os.environ.get("CHANGE_IMPACT_SERVICE_URL", "http://127.0.0.1:8040")
+RESOURCE_BFF_URL = os.environ.get("RESOURCE_BFF_URL", "http://127.0.0.1:8000")
 
 DIAGNOSIS_KEYWORDS = re.compile(r"分析|诊断|排查|告警|根因|异常|故障|排障|为什么|原因|查看.*问题|检查")
+VMWARE_KEYWORDS = re.compile(r"vmware|vcenter|esxi|虚拟机|主机|数据存储", re.I)
+K8S_KEYWORDS = re.compile(r"k8s|kubernetes|pod|deployment|node|namespace|容器|集群", re.I)
 
 
 def _now() -> str:
@@ -136,6 +139,119 @@ def _build_tool_traces(description: str) -> list[dict]:
     ]
 
 
+async def _fetch_real_context(description: str) -> dict | None:
+    target = None
+    if K8S_KEYWORDS.search(description):
+        target = ("k8s", f"{RESOURCE_BFF_URL.rstrip('/')}/api/v1/resources/k8s/workloads")
+    elif VMWARE_KEYWORDS.search(description):
+        target = ("vmware", f"{RESOURCE_BFF_URL.rstrip('/')}/api/v1/resources/vcenter/inventory")
+    if not target:
+        return None
+
+    kind, url = target
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.get(url)
+        body = resp.json()
+        if not body.get("success"):
+            return None
+        data = body.get("data", {})
+        if kind == "vmware":
+            summary = data.get("summary", {})
+            evidences = [
+                {
+                    "evidence_id": f"ev-{_uid()}",
+                    "source_type": "inventory",
+                    "summary": f"vCenter 当前共有 {summary.get('cluster_count', 0)} 个集群、{summary.get('host_count', 0)} 台主机、{summary.get('vm_count', 0)} 台虚拟机",
+                    "confidence": 0.92,
+                    "timestamp": _now(),
+                    "raw_data": summary,
+                }
+            ]
+            if summary.get("unhealthy_host_count", 0):
+                evidences.append(
+                    {
+                        "evidence_id": f"ev-{_uid()}",
+                        "source_type": "alert",
+                        "summary": f"发现 {summary['unhealthy_host_count']} 台主机处于非绿色状态",
+                        "confidence": 0.86,
+                        "timestamp": _now(),
+                        "raw_data": {"hosts": data.get("hosts", [])},
+                    }
+                )
+            traces = [
+                {
+                    "tool_name": "vmware.get_vcenter_inventory",
+                    "gateway": "vmware-skill-gateway",
+                    "input_summary": "{}",
+                    "output_summary": f"clusters={summary.get('cluster_count', 0)}, hosts={summary.get('host_count', 0)}, vms={summary.get('vm_count', 0)}",
+                    "duration_ms": 420,
+                    "status": "success",
+                    "timestamp": _now(),
+                }
+            ]
+            root_causes = [
+                {
+                    "description": "vCenter 实时资源状态中存在主机或虚拟机异常，需要优先检查非绿色对象",
+                    "confidence": 0.78 if summary.get("unhealthy_host_count", 0) else 0.58,
+                    "category": "infrastructure",
+                }
+            ]
+            actions = [
+                "检查 vCenter 中非绿色主机的硬件与连接状态",
+                "核对异常虚拟机的电源状态、资源占用与近期事件",
+            ]
+            return {"kind": kind, "evidences": evidences, "tool_traces": traces, "root_cause_candidates": root_causes, "recommended_actions": actions}
+
+        summary = data.get("summary", {})
+        evidences = [
+            {
+                "evidence_id": f"ev-{_uid()}",
+                "source_type": "inventory",
+                "summary": f"Kubernetes 当前共有 {summary.get('node_count', 0)} 个节点、{summary.get('pod_count', 0)} 个 Pod、{summary.get('deployment_count', 0)} 个 Deployment",
+                "confidence": 0.92,
+                "timestamp": _now(),
+                "raw_data": summary,
+            }
+        ]
+        if summary.get("unhealthy_pod_count", 0):
+            evidences.append(
+                {
+                    "evidence_id": f"ev-{_uid()}",
+                    "source_type": "alert",
+                    "summary": f"检测到 {summary['unhealthy_pod_count']} 个 Pod 未就绪",
+                    "confidence": 0.88,
+                    "timestamp": _now(),
+                    "raw_data": {"pods": data.get("pods", [])[:10]},
+                }
+            )
+        traces = [
+            {
+                "tool_name": "k8s.get_workload_status",
+                "gateway": "kubernetes-skill-gateway",
+                "input_summary": "{}",
+                "output_summary": f"nodes={summary.get('node_count', 0)}, pods={summary.get('pod_count', 0)}, deployments={summary.get('deployment_count', 0)}",
+                "duration_ms": 380,
+                "status": "success",
+                "timestamp": _now(),
+            }
+        ]
+        root_causes = [
+            {
+                "description": "Kubernetes 实时状态显示存在未就绪 Pod 或节点，需要优先检查调度与工作负载健康",
+                "confidence": 0.82 if summary.get("unhealthy_pod_count", 0) else 0.6,
+                "category": "platform",
+            }
+        ]
+        actions = [
+            "查看未就绪 Pod 的事件、探针与最近日志",
+            "检查节点 Ready 状态、资源压力与驱逐事件",
+        ]
+        return {"kind": kind, "evidences": evidences, "tool_traces": traces, "root_cause_candidates": root_causes, "recommended_actions": actions}
+    except Exception:
+        return None
+
+
 def _build_mock_diagnosis_text(description: str) -> str:
     """Fallback diagnosis text when LLM is unavailable."""
     return (
@@ -177,12 +293,21 @@ async def _llm_chat(message: str, history: list[dict] | None = None) -> str | No
     return await chat_completion(messages, system_prompt=SYSTEM_PROMPT)
 
 
-def _build_diagnosis(description: str, assistant_content: str | None = None, object_id: str | None = None) -> dict:
+def _build_diagnosis(
+    description: str,
+    assistant_content: str | None = None,
+    object_id: str | None = None,
+    evidences: list[dict] | None = None,
+    tool_traces: list[dict] | None = None,
+    root_cause_candidates: list[dict] | None = None,
+    recommended_actions: list[str] | None = None,
+) -> dict:
     diagnosis_id = f"dg-{_uid()}"
-    tool_traces = _build_tool_traces(description)
-    evidence_refs = [e["evidence_id"] for e in MOCK_EVIDENCES]
+    diag_evidences = evidences or MOCK_EVIDENCES
+    diag_tool_traces = tool_traces or _build_tool_traces(description)
+    evidence_refs = [e["evidence_id"] for e in diag_evidences]
 
-    root_cause_candidates = [
+    diag_root_causes = root_cause_candidates or [
         {
             "description": "app-server-01 Java Full GC 风暴导致 CPU 飙升",
             "confidence": 0.87,
@@ -195,7 +320,7 @@ def _build_diagnosis(description: str, assistant_content: str | None = None, obj
         },
     ]
 
-    recommended_actions = [
+    diag_actions = recommended_actions or [
         "检查 app-server-01 JVM 堆内存配置和 GC 日志",
         "对 esxi-node03 当前 VM 负载做平衡评估",
         "考虑将 app-server-01 迁移到低负载主机",
@@ -209,12 +334,13 @@ def _build_diagnosis(description: str, assistant_content: str | None = None, obj
         "description": description,
         "object_id": object_id,
         "assistant_message": assistant_content,
-        "root_cause_candidates": root_cause_candidates,
+        "root_cause_candidates": diag_root_causes,
         "evidence_refs": evidence_refs,
-        "evidences": MOCK_EVIDENCES,
-        "recommended_actions": recommended_actions,
-        "tool_traces": tool_traces,
+        "evidences": diag_evidences,
+        "recommended_actions": diag_actions,
+        "tool_traces": diag_tool_traces,
         "simulated_at": _now(),
+        "created_at": _now(),
     }
 
 
@@ -230,12 +356,22 @@ async def health() -> dict:
 @app.post("/api/v1/orchestrate/diagnose")
 async def orchestrate_diagnose(body: DiagnoseRequest) -> dict:
     try:
+        runtime_context = await _fetch_real_context(body.description)
+        evidence_source = runtime_context["evidences"] if runtime_context else MOCK_EVIDENCES
         evidence_summary = "\n".join(
             f"- [{e['source_type']}] {e['summary']} (置信度 {e['confidence']:.0%})"
-            for e in MOCK_EVIDENCES
+            for e in evidence_source
         )
         llm_text = await _llm_diagnosis(body.description, evidence_summary)
-        data = _build_diagnosis(body.description, llm_text, body.object_id)
+        data = _build_diagnosis(
+            body.description,
+            llm_text,
+            body.object_id,
+            evidences=runtime_context["evidences"] if runtime_context else None,
+            tool_traces=runtime_context["tool_traces"] if runtime_context else None,
+            root_cause_candidates=runtime_context["root_cause_candidates"] if runtime_context else None,
+            recommended_actions=runtime_context["recommended_actions"] if runtime_context else None,
+        )
         return make_success(data)
     except Exception as exc:
         return make_error(str(exc))
@@ -262,12 +398,21 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
         is_diagnosis = bool(DIAGNOSIS_KEYWORDS.search(body.message))
 
         if is_diagnosis:
+            runtime_context = await _fetch_real_context(body.message)
+            evidence_source = runtime_context["evidences"] if runtime_context else MOCK_EVIDENCES
             evidence_summary = "\n".join(
                 f"- [{e['source_type']}] {e['summary']} (置信度 {e['confidence']:.0%})"
-                for e in MOCK_EVIDENCES
+                for e in evidence_source
             )
             llm_text = await _llm_diagnosis(body.message, evidence_summary)
-            diag = _build_diagnosis(body.message, llm_text)
+            diag = _build_diagnosis(
+                body.message,
+                llm_text,
+                evidences=runtime_context["evidences"] if runtime_context else None,
+                tool_traces=runtime_context["tool_traces"] if runtime_context else None,
+                root_cause_candidates=runtime_context["root_cause_candidates"] if runtime_context else None,
+                recommended_actions=runtime_context["recommended_actions"] if runtime_context else None,
+            )
 
             message_id = f"msg-{_uid()}"
             data = {

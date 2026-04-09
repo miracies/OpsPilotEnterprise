@@ -33,3 +33,10 @@ def test_query_events():
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
+
+
+def test_invoke_inventory():
+    resp = client.post("/api/v1/invoke/vmware.get_vcenter_inventory", json={"input": {}})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True

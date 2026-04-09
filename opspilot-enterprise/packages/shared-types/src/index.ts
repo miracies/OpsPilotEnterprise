@@ -14,3 +14,4 @@ export * from "./agent-run";
 export * from "./upgrade";
 export * from "./connection";
 export * from "./secret";
+export * from "./resource";
