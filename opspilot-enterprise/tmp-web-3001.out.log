@@ -1,0 +1,43 @@
+
+> @opspilot/web@0.1.0 dev E:\work\git\OpsPilot\opspilot-enterprise\apps\web
+> next dev "--port" "3001"
+
+▲ Next.js 16.2.2 (Turbopack)
+- Local:         http://localhost:3001
+- Network:       http://198.18.0.1:3001
+✓ Ready in 7.7s
+
+ GET /chat 200 in 1243ms (next.js: 690ms, application-code: 554ms)
+ GET / 200 in 1662ms (next.js: 457ms, application-code: 1205ms)
+ GET /login 200 in 599ms (next.js: 318ms, application-code: 281ms)
+ GET / 200 in 138ms (next.js: 48ms, application-code: 90ms)
+ GET / 200 in 70ms (next.js: 13ms, application-code: 57ms)
+ GET /chat 200 in 76ms (next.js: 9ms, application-code: 67ms)
+ GET /connections 200 in 180ms (next.js: 115ms, application-code: 64ms)
+ GET /chat 200 in 109ms (next.js: 13ms, application-code: 97ms)
+ GET /chat 200 in 331ms (next.js: 24ms, application-code: 307ms)
+ GET /chat 200 in 117ms (next.js: 12ms, application-code: 105ms)
+ GET /chat 200 in 91ms (next.js: 7ms, application-code: 83ms)
+ GET /chat 200 in 314ms (next.js: 16ms, application-code: 298ms)
+ GET /chat 200 in 81ms (next.js: 6ms, application-code: 75ms)
+ GET /chat 200 in 102ms (next.js: 9ms, application-code: 93ms)
+ GET /chat 200 in 95ms (next.js: 4ms, application-code: 91ms)
+ GET /chat 200 in 248ms (next.js: 20ms, application-code: 228ms)
+ GET /login 200 in 268ms (next.js: 44ms, application-code: 224ms)
+ GET / 200 in 204ms (next.js: 11ms, application-code: 193ms)
+ GET / 200 in 168ms (next.js: 20ms, application-code: 148ms)
+ GET /chat 200 in 70ms (next.js: 10ms, application-code: 60ms)
+ GET /chat 200 in 564ms (next.js: 37ms, application-code: 527ms)
+ GET /login 200 in 295ms (next.js: 42ms, application-code: 253ms)
+ GET / 200 in 368ms (next.js: 35ms, application-code: 333ms)
+ GET / 200 in 166ms (next.js: 41ms, application-code: 125ms)
+ GET /chat 200 in 291ms (next.js: 43ms, application-code: 248ms)
+ GET / 200 in 112ms (next.js: 7ms, application-code: 105ms)
+ GET /chat 200 in 263ms (next.js: 49ms, application-code: 214ms)
+✓ Compiled in 6.5s
+✓ Compiled in 3.6s
+ GET /chat 200 in 1034ms (next.js: 705ms, application-code: 329ms)
+ GET /chat 200 in 104ms (next.js: 14ms, application-code: 90ms)
+✓ Compiled in 1295ms
+ GET /chat 200 in 1306ms (next.js: 962ms, application-code: 344ms)
+ GET /chat 200 in 129ms (next.js: 10ms, application-code: 119ms)

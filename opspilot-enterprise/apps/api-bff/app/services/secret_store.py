@@ -30,9 +30,8 @@ _MASTER_PASSPHRASE: str = os.environ.get(
     "OPSPILOT_SECRET_KEY", "opspilot-dev-default-key-change-me"
 )
 
-DB_PATH: Path = Path(
-    os.environ.get("OPSPILOT_SECRET_DB", "data/secrets.db")
-)
+_DEFAULT_DB_PATH = Path(__file__).resolve().parents[4] / "data" / "secrets.db"
+DB_PATH: Path = Path(os.environ.get("OPSPILOT_SECRET_DB", str(_DEFAULT_DB_PATH)))
 
 _SEED_SECRETS: list[dict[str, str]] = [
     {
@@ -40,7 +39,7 @@ _SEED_SECRETS: list[dict[str, str]] = [
         "display_name": "vCenter 生产环境凭据",
         "secret_type": "vcenter",
         "value": json.dumps(
-            {"username": "administrator@vsphere.local", "password": "ChangeMe-Prod!"},
+            {"username": "administrator@vsphere.local", "password": "P@ssw0rd"},
             ensure_ascii=False,
         ),
         "description": "示例 vCenter 凭据，请替换为真实账号密码",

@@ -1,0 +1,6 @@
+INFO:     Will watch for changes in these directories: ['E:\\work\\git\\OpsPilot\\opspilot-enterprise\\services\\change-impact-service']
+INFO:     Uvicorn running on http://0.0.0.0:8040 (Press CTRL+C to quit)
+INFO:     Started reloader process [78636] using WatchFiles
+INFO:     Started server process [24488]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.

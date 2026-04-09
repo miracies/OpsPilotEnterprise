@@ -1,0 +1,9 @@
+INFO:     127.0.0.1:51419 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51420 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51429 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49843 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:56888 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58539 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:61622 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61623 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49347 - "POST /api/v1/query/get_vcenter_inventory HTTP/1.1" 200 OK

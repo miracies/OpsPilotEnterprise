@@ -1,0 +1,14 @@
+INFO:     Started server process [29076]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8010 (Press CTRL+C to quit)
+INFO:httpx:HTTP Request: POST http://127.0.0.1:8000/api/v1/resources/vcenter/inventory/export "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://open.bigmodel.cn/api/paas/v4/chat/completions "HTTP/1.1 200 OK"
+INFO:app.llm_client:LLM response: model=glm-5-turbo, tokens={'completion_tokens': 435, 'completion_tokens_details': {'reasoning_tokens': 310}, 'prompt_tokens': 236, 'prompt_tokens_details': {'cached_tokens': 2}, 'total_tokens': 671}
+INFO:httpx:HTTP Request: GET http://127.0.0.1:8000/api/v1/resources/k8s/workloads "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://open.bigmodel.cn/api/paas/v4/chat/completions "HTTP/1.1 200 OK"
+INFO:app.llm_client:LLM response: model=glm-5-turbo, tokens={'completion_tokens': 902, 'completion_tokens_details': {'reasoning_tokens': 531}, 'prompt_tokens': 217, 'prompt_tokens_details': {'cached_tokens': 6}, 'total_tokens': 1119}
+INFO:httpx:HTTP Request: POST https://open.bigmodel.cn/api/paas/v4/chat/completions "HTTP/1.1 200 OK"
+INFO:app.llm_client:LLM response: model=glm-5-turbo, tokens={'completion_tokens': 966, 'completion_tokens_details': {'reasoning_tokens': 609}, 'prompt_tokens': 206, 'prompt_tokens_details': {'cached_tokens': 130}, 'total_tokens': 1172}
+INFO:httpx:HTTP Request: POST http://127.0.0.1:8000/api/v1/resources/vcenter/inventory/export "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST http://127.0.0.1:8000/api/v1/resources/vcenter/inventory/export "HTTP/1.1 200 OK"

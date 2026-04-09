@@ -1,0 +1,6 @@
+INFO:     127.0.0.1:51034 - "GET /api/v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55445 - "POST /api/v1/invoke/vmware.get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50603 - "POST /api/v1/invoke/vmware.get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53126 - "POST /api/v1/invoke/vmware.get_vcenter_inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53273 - "POST /api/v1/invoke/k8s.get_workload_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53289 - "POST /api/v1/invoke/k8s.get_workload_status HTTP/1.1" 200 OK

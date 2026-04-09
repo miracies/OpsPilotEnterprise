@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import ssl
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -184,12 +185,28 @@ class VCenterService:
 
     def _with_client(self, handler):
         connection = VCenterConnection.from_input(self._connection_input)
-        si = _connect(connection)
-        try:
-            content = si.RetrieveContent()
-            return handler(content, connection)
-        finally:
-            Disconnect(si)
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            si = None
+            try:
+                si = _connect(connection)
+                content = si.RetrieveContent()
+                return handler(content, connection)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= 3:
+                    break
+                # vCenter handshake may intermittently EOF; short retry improves stability.
+                time.sleep(0.8 * attempt)
+            finally:
+                if si is not None:
+                    try:
+                        Disconnect(si)
+                    except Exception:
+                        pass
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("failed to connect vCenter")
 
     async def get_inventory(self) -> dict[str, Any]:
         def _impl():
@@ -244,7 +261,15 @@ class VCenterService:
                 detail = _vm_summary(vm)
                 runtime = vm.summary.runtime
                 detail["host_name"] = runtime.host.name if getattr(runtime, "host", None) else None
-                detail["datastore_name"] = vm.datastore[0].name if getattr(vm, "datastore", None) else None
+                datastores = list(getattr(vm, "datastore", []) or [])
+                datastore_names = [ds.name for ds in datastores if getattr(ds, "name", None)]
+                detail["datastore_name"] = datastore_names[0] if datastore_names else None
+                detail["datastore_names"] = datastore_names
+                storage = getattr(vm.summary, "storage", None)
+                committed = float(getattr(storage, "committed", 0) or 0)
+                uncommitted = float(getattr(storage, "uncommitted", 0) or 0)
+                detail["used_gb"] = round(committed / 1024 / 1024 / 1024, 2) if committed else 0.0
+                detail["provisioned_gb"] = round((committed + uncommitted) / 1024 / 1024 / 1024, 2) if (committed or uncommitted) else 0.0
                 detail["uptime_seconds"] = int(getattr(vm.summary.quickStats, "uptimeSeconds", 0) or 0)
                 detail["snapshot_count"] = len(getattr(getattr(vm, "snapshot", None), "rootSnapshotList", []) or [])
                 return detail

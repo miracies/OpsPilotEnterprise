@@ -1,0 +1,66 @@
+
+> opspilot-enterprise@0.1.0 dev:web E:\work\git\OpsPilot\opspilot-enterprise
+> pnpm --filter @opspilot/web dev
+
+
+> @opspilot/web@0.1.0 dev E:\work\git\OpsPilot\opspilot-enterprise\apps\web
+> next dev
+
+▲ Next.js 16.2.2 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://198.18.0.1:3000
+✓ Ready in 818ms
+
+ GET / 200 in 544ms (next.js: 244ms, application-code: 300ms)
+ GET /chat 200 in 122ms (next.js: 71ms, application-code: 51ms)
+ GET /chat 200 in 31ms (next.js: 4ms, application-code: 27ms)
+ GET /chat 200 in 30ms (next.js: 3ms, application-code: 27ms)
+ GET /chat 200 in 29ms (next.js: 4ms, application-code: 25ms)
+ GET /chat 200 in 28ms (next.js: 3ms, application-code: 25ms)
+ GET / 200 in 44ms (next.js: 8ms, application-code: 36ms)
+ GET /login 200 in 61ms (next.js: 38ms, application-code: 23ms)
+ GET / 200 in 41ms (next.js: 5ms, application-code: 36ms)
+ GET / 200 in 21ms (next.js: 3ms, application-code: 18ms)
+ GET /chat 200 in 22ms (next.js: 4ms, application-code: 19ms)
+ GET /connections 200 in 53ms (next.js: 32ms, application-code: 21ms)
+ GET /secrets 200 in 56ms (next.js: 35ms, application-code: 20ms)
+ GET /connections 200 in 20ms (next.js: 3ms, application-code: 17ms)
+ GET /chat 200 in 20ms (next.js: 3ms, application-code: 17ms)
+ GET /connections 200 in 22ms (next.js: 4ms, application-code: 18ms)
+ GET /connections 200 in 44ms (next.js: 3ms, application-code: 41ms)
+ GET /chat 200 in 22ms (next.js: 4ms, application-code: 18ms)
+ GET /connections 200 in 18ms (next.js: 3ms, application-code: 15ms)
+ GET /chat 200 in 21ms (next.js: 4ms, application-code: 16ms)
+ GET /resources/vcenter 200 in 53ms (next.js: 34ms, application-code: 19ms)
+ GET /resources/vcenter 200 in 22ms (next.js: 3ms, application-code: 19ms)
+ GET /secrets 200 in 18ms (next.js: 3ms, application-code: 15ms)
+ GET /settings 200 in 104ms (next.js: 80ms, application-code: 24ms)
+ GET /agents 200 in 59ms (next.js: 40ms, application-code: 18ms)
+ GET /connections 200 in 19ms (next.js: 3ms, application-code: 16ms)
+ GET /secrets 200 in 20ms (next.js: 3ms, application-code: 17ms)
+ GET /chat 200 in 20ms (next.js: 3ms, application-code: 17ms)
+ GET /connections 200 in 19ms (next.js: 4ms, application-code: 16ms)
+ GET /resources/vcenter 200 in 23ms (next.js: 4ms, application-code: 19ms)
+ GET /secrets 200 in 19ms (next.js: 3ms, application-code: 16ms)
+ GET /connections 200 in 21ms (next.js: 4ms, application-code: 16ms)
+ GET /resources/vcenter 200 in 24ms (next.js: 3ms, application-code: 21ms)
+ GET /chat 200 in 26ms (next.js: 5ms, application-code: 21ms)
+✓ Compiled in 666ms
+ GET /chat 200 in 299ms (next.js: 169ms, application-code: 130ms)
+ GET /incidents 200 in 56ms (next.js: 37ms, application-code: 19ms)
+ GET /diagnosis 200 in 57ms (next.js: 37ms, application-code: 20ms)
+ GET /incidents 200 in 22ms (next.js: 4ms, application-code: 18ms)
+ GET /diagnosis 200 in 22ms (next.js: 3ms, application-code: 19ms)
+ GET /chat 200 in 21ms (next.js: 5ms, application-code: 17ms)
+ GET /incidents 200 in 17ms (next.js: 3ms, application-code: 14ms)
+ GET /chat 200 in 25ms (next.js: 3ms, application-code: 22ms)
+ GET /incidents 200 in 28ms (next.js: 5ms, application-code: 23ms)
+ GET /diagnosis 200 in 21ms (next.js: 4ms, application-code: 17ms)
+ GET /incidents 200 in 20ms (next.js: 3ms, application-code: 17ms)
+ GET /chat 200 in 20ms (next.js: 3ms, application-code: 17ms)
+ GET /incidents 200 in 24ms (next.js: 4ms, application-code: 21ms)
+ GET /diagnosis 200 in 19ms (next.js: 3ms, application-code: 16ms)
+ GET /incidents 200 in 23ms (next.js: 3ms, application-code: 20ms)
+ GET /diagnosis 200 in 23ms (next.js: 3ms, application-code: 20ms)
+ GET /incidents 200 in 19ms (next.js: 3ms, application-code: 16ms)
+ GET /chat 200 in 23ms (next.js: 5ms, application-code: 18ms)

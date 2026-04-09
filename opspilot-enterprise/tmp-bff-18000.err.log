@@ -1,0 +1,28 @@
+INFO:     Started server process [25020]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:18000 (Press CTRL+C to quit)
+invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
+Traceback (most recent call last):
+  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 184, in _fetch_vcenter_inventory_data
+    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 134, in _invoke_tool
+    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
+RuntimeError: http://127.0.0.1:18020: upstream request failed: All connection attempts failed
+invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
+Traceback (most recent call last):
+  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 184, in _fetch_vcenter_inventory_data
+    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 134, in _invoke_tool
+    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
+RuntimeError: http://127.0.0.1:18020: upstream request failed: All connection attempts failed
+invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
+Traceback (most recent call last):
+  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 184, in _fetch_vcenter_inventory_data
+    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 134, in _invoke_tool
+    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
+RuntimeError: http://127.0.0.1:18020: upstream returned non-JSON (status 500); body_preview='Internal Server Error'

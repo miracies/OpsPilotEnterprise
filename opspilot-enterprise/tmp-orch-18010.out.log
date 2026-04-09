@@ -1,0 +1,6 @@
+INFO:     127.0.0.1:54023 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54029 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51688 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62772 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61258 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64966 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK

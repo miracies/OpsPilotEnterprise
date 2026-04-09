@@ -1,0 +1,20 @@
+⚠ Blocked cross-origin request to Next.js dev resource /_next/webpack-hmr from "127.0.0.1".
+Cross-origin access to Next.js dev resources is blocked by default for safety.
+
+To allow this host in development, add it to "allowedDevOrigins" in next.config.js and restart the dev server:
+
+// next.config.js
+module.exports = {
+  allowedDevOrigins: ['127.0.0.1'],
+}
+
+Read more: https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins
+[browser] ⨯ unhandledRejection: Error: API request failed on all configured endpoints
+    at apiFetch (src/lib/api.ts:48:9)
+    at async handleTest (src/app/connections/page.tsx:120:17)
+  46 |     throw lastError;
+  47 |   }
+> 48 |   throw new ApiError(502, "API request failed on all configured endpoints");
+     |         ^
+  49 | }
+  50 |

@@ -22,6 +22,30 @@ class ChatSession(BaseModel):
     message_count: int = 0
 
 
+class ProgressEvent(BaseModel):
+    stage: Literal[
+        "received",
+        "intent_parsed",
+        "agent_selected",
+        "tool_invoking",
+        "tool_done",
+        "tool_error",
+        "completed",
+        "failed",
+    ]
+    text: str
+    ts: str
+    status: Literal["in_progress", "success", "error"]
+    tool_name: str | None = None
+    agent_name: str | None = None
+
+
+class ReasoningSummary(BaseModel):
+    intent_understanding: str
+    execution_plan: str
+    result_summary: str
+
+
 class ChatMessage(BaseModel):
     id: str
     session_id: str
@@ -33,3 +57,9 @@ class ChatMessage(BaseModel):
     root_cause_candidates: list[dict] | None = None
     recommended_actions: list[str] | None = None
     agent_name: str | None = None
+    export_file: dict | None = None
+    export_columns: list[str] | None = None
+    ignored_columns: list[str] | None = None
+    status: Literal["in_progress", "completed", "failed"] | None = None
+    progress_events: list[ProgressEvent] | None = None
+    reasoning_summary: ReasoningSummary | None = None

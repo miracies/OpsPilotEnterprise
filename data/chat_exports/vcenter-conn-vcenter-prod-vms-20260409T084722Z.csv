@@ -1,0 +1,3 @@
+﻿name,ip_address,host_name,cpu_count
+vm-a,10.0.0.1,esxi-01,4
+vm-b,10.0.0.2,esxi-02,8
