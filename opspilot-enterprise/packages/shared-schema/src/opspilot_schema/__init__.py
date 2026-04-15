@@ -12,6 +12,13 @@ from .policy import OpsPolicy, PolicyHitRecord
 from .case_archive import CaseArchive
 from .agent_run import AgentRun, AgentRunStep
 from .upgrade import UpgradePackage, UpgradeDeploymentRecord
+from .execution import (
+    ExecutionRequest,
+    ExecutionTarget,
+    ExecutionDryRunResult,
+    ExecutionDryRunTargetResult,
+    ExecutionPolicyResult,
+)
 
 __all__ = [
     "ApiEnvelope", "make_success", "make_error",
@@ -28,4 +35,6 @@ __all__ = [
     "CaseArchive",
     "AgentRun", "AgentRunStep",
     "UpgradePackage", "UpgradeDeploymentRecord",
+    "ExecutionRequest", "ExecutionTarget", "ExecutionDryRunResult",
+    "ExecutionDryRunTargetResult", "ExecutionPolicyResult",
 ]

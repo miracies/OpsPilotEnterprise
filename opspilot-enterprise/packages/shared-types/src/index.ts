@@ -15,3 +15,4 @@ export * from "./upgrade";
 export * from "./connection";
 export * from "./secret";
 export * from "./resource";
+export * from "./execution";

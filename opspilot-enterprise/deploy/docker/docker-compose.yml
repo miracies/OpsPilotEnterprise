@@ -100,6 +100,12 @@ services:
       dockerfile: services/governance-service/Dockerfile
     ports:
       - "8071:8071"
+    depends_on:
+      - opa
+    environment:
+      OPA_URL: http://opa:8181
+      OPA_POLICY_PATH: /v1/data/opspilot
+      OPA_FAIL_MODE: deny
 
   knowledge:
     build:
@@ -107,3 +113,16 @@ services:
       dockerfile: services/knowledge-service/Dockerfile
     ports:
       - "8072:8072"
+
+  opa:
+    image: openpolicyagent/opa:latest
+    ports:
+      - "8181:8181"
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "/policies"
+    volumes:
+      - ../../policy/rego:/policies:ro

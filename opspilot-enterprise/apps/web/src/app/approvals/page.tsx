@@ -1,256 +1,460 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ShieldCheck, Clock, AlertTriangle, CheckCircle2,
-  XCircle, ChevronRight, ExternalLink, User, FileText,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  FileText,
+  User,
+  XCircle,
 } from "lucide-react";
-import { PageHeader } from "@/components/ui/page-header";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Badge, SeverityBadge, RiskBadge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { cn, formatDate } from "@/lib/utils";
-import { mockApprovals } from "@/lib/mock-data";
 import Link from "next/link";
+import { type ApprovalRequest } from "@opspilot/shared-types";
+
+import { PageHeader } from "@/components/ui/page-header";
+import { Badge, RiskBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api";
+import { cn, formatDate } from "@/lib/utils";
+
+type ApprovalsListEnvelope = {
+  success: boolean;
+  error?: string;
+  data?: {
+    items?: ApprovalRequest[];
+    total?: number;
+  };
+};
+
+type ApprovalDetailEnvelope = {
+  success: boolean;
+  error?: string;
+  data?: ApprovalRequest;
+};
 
 const STATUS_TABS = [
-  { key: "all",      label: "全部" },
-  { key: "pending",  label: "待审批" },
+  { key: "all", label: "全部" },
+  { key: "pending", label: "待审批" },
   { key: "approved", label: "已通过" },
   { key: "rejected", label: "已驳回" },
-  { key: "expired",  label: "已过期" },
-];
+  { key: "expired", label: "已过期" },
+] as const;
 
 const STATUS_STYLE: Record<string, string> = {
-  pending:  "bg-amber-50 text-amber-700 ring-amber-600/20",
+  pending: "bg-amber-50 text-amber-700 ring-amber-600/20",
   approved: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
   rejected: "bg-red-50 text-red-700 ring-red-600/20",
-  expired:  "bg-slate-100 text-slate-500 ring-slate-300",
+  expired: "bg-slate-100 text-slate-500 ring-slate-300",
   recalled: "bg-slate-100 text-slate-500 ring-slate-300",
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  pending:  "待审批",
+  pending: "待审批",
   approved: "已通过",
   rejected: "已驳回",
-  expired:  "已过期",
+  expired: "已过期",
   recalled: "已撤回",
 };
 
+const DEFAULT_DECIDER = "ops-user";
+
 export default function ApprovalsPage() {
-  const [filter, setFilter] = useState("all");
-  const [selected, setSelected] = useState<string | null>(mockApprovals[0]?.id ?? null);
+  const [filter, setFilter] = useState<(typeof STATUS_TABS)[number]["key"]>("all");
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ApprovalRequest | null>(null);
 
-  const filtered = filter === "all" ? mockApprovals : mockApprovals.filter((a) => a.status === filter);
-  const detail = mockApprovals.find((a) => a.id === selected);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [decisionComment, setDecisionComment] = useState("");
 
-  const counts: Record<string, number> = {
-    all:      mockApprovals.length,
-    pending:  mockApprovals.filter((a) => a.status === "pending").length,
-    approved: mockApprovals.filter((a) => a.status === "approved").length,
-    rejected: mockApprovals.filter((a) => a.status === "rejected").length,
-    expired:  mockApprovals.filter((a) => a.status === "expired").length,
+  const loadApprovals = useCallback(async () => {
+    const path = filter === "all" ? "/api/v1/approvals" : `/api/v1/approvals?status=${encodeURIComponent(filter)}`;
+    const res = await apiFetch<ApprovalsListEnvelope>(path);
+    if (!res.success) {
+      throw new Error(res.error || "加载审批列表失败");
+    }
+    const items = res.data?.items ?? [];
+    setApprovals(items);
+    setSelectedId((prev) => {
+      if (!prev) return items[0]?.id ?? null;
+      return items.some((x) => x.id === prev) ? prev : (items[0]?.id ?? null);
+    });
+  }, [filter]);
+
+  const loadDetail = useCallback(async (approvalId: string | null) => {
+    if (!approvalId) {
+      setDetail(null);
+      return;
+    }
+    const res = await apiFetch<ApprovalDetailEnvelope>(`/api/v1/approvals/${approvalId}`);
+    if (!res.success || !res.data) {
+      throw new Error(res.error || "加载审批详情失败");
+    }
+    setDetail(res.data);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      await loadApprovals();
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "加载审批数据失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [loadApprovals]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      return;
+    }
+    void (async () => {
+      try {
+        await loadDetail(selectedId);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "加载审批详情失败");
+      }
+    })();
+  }, [selectedId, loadDetail]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refresh();
+      if (selectedId) {
+        void loadDetail(selectedId).catch(() => null);
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [refresh, selectedId, loadDetail]);
+
+  const counts = useMemo(() => {
+    const all = approvals.length;
+    return {
+      all,
+      pending: approvals.filter((x) => x.status === "pending").length,
+      approved: approvals.filter((x) => x.status === "approved").length,
+      rejected: approvals.filter((x) => x.status === "rejected").length,
+      expired: approvals.filter((x) => x.status === "expired").length,
+    };
+  }, [approvals]);
+
+  const submitDecision = async (decision: "approved" | "rejected") => {
+    if (!detail || detail.status !== "pending") return;
+    const comment = decisionComment.trim();
+    if (decision === "rejected" && !comment) {
+      setError("驳回时必须填写审批意见");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await apiFetch<{ success: boolean; error?: string }>(
+        `/api/v1/approvals/${detail.id}/decide`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            decision,
+            decided_by: DEFAULT_DECIDER,
+            comment: comment || null,
+          }),
+        }
+      );
+      if (!res.success) {
+        throw new Error(res.error || "提交审批结果失败");
+      }
+      setDecisionComment("");
+      await refresh();
+      await loadDetail(detail.id);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "提交审批结果失败");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-6rem)]">
+    <div className="flex h-[calc(100vh-6rem)] flex-col">
       <PageHeader
         title="审批中心"
-        description="待审批执行请求与高风险操作管控"
+        description="查看并处理待审批执行请求，联动真实审批数据流。"
         actions={
           <div className="flex items-center gap-2">
-            <span className="text-xs text-amber-600 font-medium bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+            <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
               {counts.pending} 项待审批
             </span>
+            <Button variant="secondary" size="sm" onClick={() => void refresh()}>
+              刷新
+            </Button>
           </div>
         }
       />
 
-      {/* Status Tabs */}
-      <div className="flex items-center gap-1 mb-4 border-b border-slate-200">
+      <div className="mb-4 flex items-center gap-1 border-b border-slate-200">
         {STATUS_TABS.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setFilter(tab.key)}
             className={cn(
-              "px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px",
+              "border-b-2 -mb-px px-4 py-2.5 text-sm font-medium transition-all",
               filter === tab.key
                 ? "border-blue-600 text-blue-700"
-                : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"
+                : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700"
             )}
           >
             {tab.label}
-            <span className={cn(
-              "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-              filter === tab.key ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"
-            )}>
-              {counts[tab.key] ?? 0}
+            <span
+              className={cn(
+                "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                filter === tab.key ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"
+              )}
+            >
+              {counts[tab.key]}
             </span>
           </button>
         ))}
       </div>
 
-      <div className="flex gap-4 flex-1 min-h-0">
-        {/* List */}
-        <div className="flex-1 rounded-xl border border-slate-200 bg-white overflow-auto shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500">申请标题</th>
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 w-20">操作类型</th>
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 w-20">风险等级</th>
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 w-20">状态</th>
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 w-20">申请人</th>
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 w-32">申请时间</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {filtered.map((apr) => (
-                <tr
-                  key={apr.id}
-                  onClick={() => setSelected(apr.id)}
-                  className={cn(
-                    "cursor-pointer transition-colors hover:bg-slate-50",
-                    selected === apr.id ? "bg-blue-50" : "",
-                    apr.status === "pending" ? "border-l-2 border-l-amber-400" : ""
-                  )}
-                >
-                  <td className="px-5 py-3">
-                    <p className="font-medium text-slate-900 truncate max-w-[260px]">{apr.title}</p>
-                    <p className="text-[11px] text-slate-400 font-mono mt-0.5">{apr.id}</p>
-                  </td>
-                  <td className="px-3 py-3">
-                    <Badge variant="neutral">{apr.action_type}</Badge>
-                  </td>
-                  <td className="px-3 py-3"><RiskBadge level={apr.risk_level} /></td>
-                  <td className="px-3 py-3">
-                    <span className={cn("inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset", STATUS_STYLE[apr.status] ?? STATUS_STYLE.expired)}>
-                      {STATUS_LABEL[apr.status] ?? apr.status}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3 text-xs text-slate-600">{apr.requester}</td>
-                  <td className="px-3 py-3 text-xs text-slate-500 flex items-center gap-1">
-                    <Clock className="h-3 w-3 text-slate-300" />
-                    {formatDate(apr.created_at)}
-                  </td>
+      {error && <div className="mb-3 text-sm text-red-600">{error}</div>}
+      {loading && <div className="mb-3 text-sm text-slate-500">正在加载审批数据...</div>}
+
+      <div className="flex min-h-0 flex-1 gap-4">
+        <div className="flex-1 overflow-auto rounded-xl border border-slate-200 bg-white shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
+          {approvals.length === 0 ? (
+            <div className="p-6 text-sm text-slate-500">当前筛选下暂无审批记录</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500">申请标题</th>
+                  <th className="w-20 px-3 py-3 text-left text-xs font-semibold text-slate-500">动作类型</th>
+                  <th className="w-20 px-3 py-3 text-left text-xs font-semibold text-slate-500">风险等级</th>
+                  <th className="w-20 px-3 py-3 text-left text-xs font-semibold text-slate-500">状态</th>
+                  <th className="w-24 px-3 py-3 text-left text-xs font-semibold text-slate-500">申请人</th>
+                  <th className="w-36 px-3 py-3 text-left text-xs font-semibold text-slate-500">申请时间</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {approvals.map((apr) => (
+                  <tr
+                    key={apr.id}
+                    onClick={() => setSelectedId(apr.id)}
+                    className={cn(
+                      "cursor-pointer transition-colors hover:bg-slate-50",
+                      selectedId === apr.id ? "bg-blue-50" : "",
+                      apr.status === "pending" ? "border-l-2 border-l-amber-400" : ""
+                    )}
+                  >
+                    <td className="px-5 py-3">
+                      <p className="max-w-[260px] truncate font-medium text-slate-900">{apr.title}</p>
+                      <p className="mt-0.5 font-mono text-[11px] text-slate-400">{apr.id}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant="neutral">{apr.action_type}</Badge>
+                    </td>
+                    <td className="px-3 py-3">
+                      <RiskBadge level={apr.risk_level} />
+                    </td>
+                    <td className="px-3 py-3">
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset",
+                          STATUS_STYLE[apr.status] ?? STATUS_STYLE.expired
+                        )}
+                      >
+                        {STATUS_LABEL[apr.status] ?? apr.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-xs text-slate-600">{apr.requester}</td>
+                    <td className="flex items-center gap-1 px-3 py-3 text-xs text-slate-500">
+                      <Clock className="h-3 w-3 text-slate-300" />
+                      {formatDate(apr.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
 
-        {/* Detail */}
-        {detail && (
-          <div className="w-80 shrink-0 rounded-xl border border-slate-200 bg-white overflow-y-auto shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
-            <div className={cn(
-              "px-4 py-3 border-b border-slate-100 border-l-4",
-              detail.risk_level === "critical" ? "border-l-red-500" :
-              detail.risk_level === "high" ? "border-l-orange-400" :
-              detail.risk_level === "medium" ? "border-l-amber-400" : "border-l-emerald-400"
-            )}>
-              <div className="flex items-center justify-between mb-1.5">
-                <RiskBadge level={detail.risk_level} />
-                <span className={cn("inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset", STATUS_STYLE[detail.status])}>
-                  {STATUS_LABEL[detail.status]}
-                </span>
-              </div>
-              <h3 className="text-sm font-semibold text-slate-900 leading-snug">{detail.title}</h3>
-              <p className="text-[11px] text-slate-400 font-mono mt-0.5">{detail.id}</p>
-            </div>
-
-            <div className="px-4 py-4 space-y-5">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">变更描述</p>
-                <p className="text-xs text-slate-700 leading-relaxed">{detail.description}</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
-                  <p className="text-[10px] text-slate-400 mb-0.5">目标对象</p>
-                  <p className="text-xs font-medium text-slate-700">{detail.target_object}</p>
-                  <p className="text-[10px] text-slate-400">{detail.target_object_type}</p>
+        <div className="w-80 shrink-0 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
+          {!detail ? (
+            <div className="p-6 text-sm text-slate-500">请选择一条审批记录查看详情</div>
+          ) : (
+            <>
+              <div
+                className={cn(
+                  "border-b border-slate-100 border-l-4 px-4 py-3",
+                  detail.risk_level === "critical"
+                    ? "border-l-red-500"
+                    : detail.risk_level === "high"
+                      ? "border-l-orange-400"
+                      : detail.risk_level === "medium"
+                        ? "border-l-amber-400"
+                        : "border-l-emerald-400"
+                )}
+              >
+                <div className="mb-1.5 flex items-center justify-between">
+                  <RiskBadge level={detail.risk_level} />
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset",
+                      STATUS_STYLE[detail.status] ?? STATUS_STYLE.expired
+                    )}
+                  >
+                    {STATUS_LABEL[detail.status] ?? detail.status}
+                  </span>
                 </div>
-                <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
-                  <p className="text-[10px] text-slate-400 mb-0.5">风险评分</p>
-                  <p className={cn("text-lg font-bold",
-                    detail.risk_score >= 60 ? "text-red-600" :
-                    detail.risk_score >= 30 ? "text-amber-600" : "text-emerald-600"
-                  )}>{detail.risk_score}</p>
-                  <p className="text-[10px] text-slate-400">/ 100</p>
-                </div>
+                <h3 className="text-sm font-semibold leading-snug text-slate-900">{detail.title}</h3>
+                <p className="mt-0.5 font-mono text-[11px] text-slate-400">{detail.id}</p>
               </div>
 
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">关联信息</p>
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2 text-xs">
-                    <User className="h-3.5 w-3.5 text-slate-400" />
-                    <span className="text-slate-500">申请人：</span>
-                    <span className="text-slate-700 font-medium">{detail.requester}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs">
-                    <User className="h-3.5 w-3.5 text-slate-400" />
-                    <span className="text-slate-500">审批人：</span>
-                    <span className="text-slate-700 font-medium">{detail.assignee ?? "未指派"}</span>
-                  </div>
-                  {detail.incident_ref && (
-                    <div className="flex items-center gap-2 text-xs">
-                      <AlertTriangle className="h-3.5 w-3.5 text-slate-400" />
-                      <span className="text-slate-500">关联事件：</span>
-                      <Link href="/incidents" className="text-blue-600 hover:underline font-medium">{detail.incident_ref}</Link>
-                    </div>
-                  )}
-                  {detail.change_analysis_ref && (
-                    <div className="flex items-center gap-2 text-xs">
-                      <FileText className="h-3.5 w-3.5 text-slate-400" />
-                      <span className="text-slate-500">变更分析：</span>
-                      <Link href="/change-impact" className="text-blue-600 hover:underline font-medium">{detail.change_analysis_ref}</Link>
-                    </div>
-                  )}
-                  {detail.expires_at && (
-                    <div className="flex items-center gap-2 text-xs">
-                      <Clock className="h-3.5 w-3.5 text-slate-400" />
-                      <span className="text-slate-500">过期时间：</span>
-                      <span className="text-amber-600 font-medium">{formatDate(detail.expires_at)}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {detail.decision_comment && (
+              <div className="space-y-5 px-4 py-4">
                 <div>
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">审批意见</p>
-                  <div className={cn("rounded-lg border px-3 py-2.5 text-xs",
-                    detail.status === "approved" ? "bg-emerald-50 border-emerald-200 text-emerald-700" :
-                    detail.status === "rejected" ? "bg-red-50 border-red-200 text-red-700" : "bg-slate-50 border-slate-100 text-slate-700"
-                  )}>
-                    {detail.decision_comment}
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">变更描述</p>
+                  <p className="text-xs leading-relaxed text-slate-700">{detail.description}</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
+                    <p className="mb-0.5 text-[10px] text-slate-400">目标对象</p>
+                    <p className="text-xs font-medium text-slate-700">{detail.target_object}</p>
+                    <p className="text-[10px] text-slate-400">{detail.target_object_type}</p>
                   </div>
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    {detail.decided_by} · {detail.decided_at ? formatDate(detail.decided_at) : ""}
-                  </p>
+                  <div className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
+                    <p className="mb-0.5 text-[10px] text-slate-400">风险评分</p>
+                    <p
+                      className={cn(
+                        "text-lg font-bold",
+                        detail.risk_score >= 60
+                          ? "text-red-600"
+                          : detail.risk_score >= 30
+                            ? "text-amber-600"
+                            : "text-emerald-600"
+                      )}
+                    >
+                      {detail.risk_score}
+                    </p>
+                    <p className="text-[10px] text-slate-400">/ 100</p>
+                  </div>
                 </div>
-              )}
 
-              {detail.status === "pending" && (
-                <div className="flex gap-2 pt-1">
-                  <Button variant="primary" size="sm" className="flex-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> 通过
-                  </Button>
-                  <Button variant="secondary" size="sm" className="flex-1 text-red-600 border-red-200 hover:bg-red-50">
-                    <XCircle className="h-3.5 w-3.5" /> 驳回
-                  </Button>
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">关联信息</p>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs">
+                      <User className="h-3.5 w-3.5 text-slate-400" />
+                      <span className="text-slate-500">申请人：</span>
+                      <span className="font-medium text-slate-700">{detail.requester}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs">
+                      <User className="h-3.5 w-3.5 text-slate-400" />
+                      <span className="text-slate-500">审批人：</span>
+                      <span className="font-medium text-slate-700">{detail.assignee ?? "未指派"}</span>
+                    </div>
+                    {detail.incident_ref && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <AlertTriangle className="h-3.5 w-3.5 text-slate-400" />
+                        <span className="text-slate-500">关联事件：</span>
+                        <Link href="/incidents" className="font-medium text-blue-600 hover:underline">
+                          {detail.incident_ref}
+                        </Link>
+                      </div>
+                    )}
+                    {detail.change_analysis_ref && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <FileText className="h-3.5 w-3.5 text-slate-400" />
+                        <span className="text-slate-500">变更分析：</span>
+                        <Link href="/change-impact" className="font-medium text-blue-600 hover:underline">
+                          {detail.change_analysis_ref}
+                        </Link>
+                      </div>
+                    )}
+                    {detail.expires_at && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <Clock className="h-3.5 w-3.5 text-slate-400" />
+                        <span className="text-slate-500">过期时间：</span>
+                        <span className="font-medium text-amber-600">{formatDate(detail.expires_at)}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
 
-              <div className="flex gap-2 flex-wrap">
-                {detail.tags.map((t) => (
-                  <Badge key={t} variant="neutral">{t}</Badge>
-                ))}
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">审批意见</p>
+                  <textarea
+                    className="min-h-[88px] w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    value={decisionComment}
+                    onChange={(e) => setDecisionComment(e.target.value)}
+                    placeholder="驳回时必须填写审批意见；通过可选。"
+                    disabled={detail.status !== "pending" || submitting}
+                  />
+                </div>
+
+                {detail.decision_comment && (
+                  <div>
+                    <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">已记录结果</p>
+                    <div
+                      className={cn(
+                        "rounded-lg border px-3 py-2.5 text-xs",
+                        detail.status === "approved"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : detail.status === "rejected"
+                            ? "border-red-200 bg-red-50 text-red-700"
+                            : "border-slate-100 bg-slate-50 text-slate-700"
+                      )}
+                    >
+                      {detail.decision_comment}
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      {detail.decided_by} · {detail.decided_at ? formatDate(detail.decided_at) : "-"}
+                    </p>
+                  </div>
+                )}
+
+                {detail.status === "pending" && (
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      className="flex-1"
+                      disabled={submitting}
+                      onClick={() => void submitDecision("approved")}
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      通过
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="flex-1 border-red-200 text-red-600 hover:bg-red-50"
+                      disabled={submitting}
+                      onClick={() => void submitDecision("rejected")}
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      驳回
+                    </Button>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  {detail.tags.map((t) => (
+                    <Badge key={t} variant="neutral">
+                      {t}
+                    </Badge>
+                  ))}
+                </div>
               </div>
-            </div>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

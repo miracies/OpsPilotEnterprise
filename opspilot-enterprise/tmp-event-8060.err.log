@@ -1,6 +1,4 @@
-INFO:     Will watch for changes in these directories: ['E:\\work\\git\\OpsPilot\\opspilot-enterprise\\services\\event-ingestion-service']
-INFO:     Uvicorn running on http://0.0.0.0:8060 (Press CTRL+C to quit)
-INFO:     Started reloader process [22804] using WatchFiles
-INFO:     Started server process [103668]
+INFO:     Started server process [47128]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8060 (Press CTRL+C to quit)

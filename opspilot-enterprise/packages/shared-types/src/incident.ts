@@ -22,6 +22,7 @@ export interface Incident {
   root_cause_candidates: RootCauseCandidate[];
   recommended_actions: string[];
   evidence_refs: string[];
+  analysis?: IncidentAnalysis;
   summary: string;
 }
 
@@ -37,6 +38,33 @@ export interface RootCauseCandidate {
   confidence: number;
   evidence_refs: string[];
   category: string;
+}
+
+export type AnalysisStatus = "idle" | "running" | "completed" | "failed";
+
+export interface IncidentAnalysisStep {
+  round: number;
+  stage: string;
+  tool_name?: string;
+  input_summary?: string;
+  output_summary?: string;
+  finding: string;
+  decision: string;
+  timestamp: string;
+  status: "success" | "failed" | "running";
+}
+
+export interface IncidentAnalysis {
+  status: AnalysisStatus;
+  round: number;
+  max_rounds: number;
+  started_at?: string;
+  updated_at?: string;
+  elapsed_ms?: number;
+  final_conclusion?: string;
+  recommended_actions?: string[];
+  analysis_process: IncidentAnalysisStep[];
+  next_decision?: string;
 }
 
 export interface IncidentTimelineEntry {

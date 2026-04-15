@@ -2,44 +2,62 @@ package opspilot
 
 import rego.v1
 
-# Default deny
+# Decision outputs
 default allow := false
+default approval_required := false
+default deny_reason := ""
 
-# Allow all read operations
+is_read if input.action_type == "read"
+is_write if input.action_type in ["write", "dangerous"]
+is_high_risk if input.risk_level in ["high", "critical"]
+is_high_risk if to_number(input.risk_score) >= 70
+
+# Approval gates
+approval_required if {
+	is_write
+	is_high_risk
+}
+
+approval_required if {
+	is_write
+	lower(input.environment) == "prod"
+}
+
+# Explicit deny reasons as a set (avoid conflicting complete rules)
+deny_reasons contains "Prod direct power-off is blocked" if {
+	lower(input.environment) == "prod"
+	input.tool_name == "vmware.vm_power_off"
+	not input.approved
+}
+
+deny_reasons contains "Same person cannot request and approve high-risk action" if {
+	is_high_risk
+	input.requester != ""
+	input.approver != ""
+	input.requester == input.approver
+}
+
+deny_reason := concat("; ", sort([r | r := deny_reasons[_]])) if {
+	count(deny_reasons) > 0
+}
+
+# Allow reads unless explicitly denied
 allow if {
-    input.action_type == "read"
+	is_read
+	deny_reason == ""
 }
 
-# Allow write operations for non-dangerous risk levels
+# Allow writes only when no approval is required and no deny reason
 allow if {
-    input.action_type == "write"
-    input.risk_level in ["low", "medium"]
+	is_write
+	not approval_required
+	deny_reason == ""
 }
 
-# Dangerous operations require approval
-approval_required if {
-    input.action_type == "dangerous"
-}
-
-approval_required if {
-    input.action_type == "write"
-    input.risk_level in ["high", "critical"]
-}
-
-approval_required if {
-    input.environment == "prod"
-    input.action_type == "write"
-}
-
-# Deny power-off in production without approval
-deny_reason := "生产环境禁止直接 power off" if {
-    input.environment == "prod"
-    input.tool_name == "vmware.vm_power_off"
-    not input.approved
-}
-
-# Same person cannot initiate and approve
-deny_reason := "同一人不可同时发起和审批高风险动作" if {
-    input.requester == input.approver
-    input.risk_level == "high"
+# Allow writes requiring approval only after approved flag is true
+allow if {
+	is_write
+	approval_required
+	input.approved == true
+	deny_reason == ""
 }

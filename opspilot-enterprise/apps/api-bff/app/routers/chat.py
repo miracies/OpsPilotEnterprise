@@ -21,6 +21,11 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://127.0.0.1:8010")
 RESOURCE_BFF_URL = os.environ.get("RESOURCE_BFF_URL", "http://127.0.0.1:8000")
+TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
+EVENT_INGESTION_URL = os.environ.get("EVENT_INGESTION_URL", "http://127.0.0.1:8060")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
 VCENTER_PROD_VM_QUERY_KEYWORDS = re.compile(
     r"(vcenter|vsphere).*(\u751f\u4ea7|prod).*(\u865a\u62df\u673a|vm).*(\u591a\u5c11|\u6570\u91cf|count)"
     r"|(\u751f\u4ea7|prod).*(vcenter|vsphere).*(\u865a\u62df\u673a|vm).*(\u591a\u5c11|\u6570\u91cf|count)",
@@ -36,6 +41,9 @@ DIAGNOSIS_KEYWORDS = re.compile(
     r"\u5206\u6790|\u8bca\u65ad|\u6392\u67e5|\u544a\u8b66|\u6839\u56e0|\u5f02\u5e38|\u6545\u969c|\u6392\u969c|\u4e3a\u4ec0\u4e48|\u539f\u56e0|\u68c0\u67e5",
     re.I,
 )
+VMWARE_KEYWORDS = re.compile(r"vmware|vcenter|esxi|\u865a\u62df\u673a|\u4e3b\u673a|\u6570\u636e\u5b58\u50a8", re.I)
+K8S_KEYWORDS = re.compile(r"k8s|kubernetes|pod|deployment|node|namespace|\u5bb9\u5668|\u96c6\u7fa4", re.I)
+HOST_IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 PENDING_INTENT = "resource_query_vcenter_prod_vm_count"
 EXPORT_COLUMN_ALIAS_MAP: dict[str, tuple[str, ...]] = {
     "name": ("name",),
@@ -95,6 +103,124 @@ def _is_vcenter_prod_vm_export_query(message: str) -> bool:
     return has_platform and has_env and has_vm and has_list and has_export
 
 
+def _is_vcenter_prod_vm_power_query(message: str) -> bool:
+    lowered = message.lower()
+    has_platform = any(k in lowered for k in ("vcenter", "vsphere"))
+    has_env = any(k in message for k in ("生产", "prod"))
+    has_vm = any(k in message for k in ("虚拟机", "vm"))
+    has_power = any(k in lowered for k in ("power", "power state")) or any(
+        k in message for k in ("电源状态", "开机", "关机", "运行状态")
+    )
+    return has_platform and has_env and has_vm and has_power
+
+
+def _extract_vm_name_from_message(message: str) -> str | None:
+    patterns = [
+        r"(?:打开|开启|启动|开机|关闭|关机)\s*([A-Za-z0-9._-]+)\s*(?:的)?电源",
+        r"(?:power\s*on|turn\s*on|open|start|power\s*off|turn\s*off|shutdown|stop)\s+([A-Za-z0-9._-]+)",
+        r"(?:虚拟机|\bvm\b)\s*[:：]?\s*([A-Za-z0-9._-]+)",
+        r"([A-Za-z0-9._-]+)\s*(?:的)?(?:电源状态|运行状态|power\s*state)",
+    ]
+    stopwords = {"vcenter", "vsphere", "prod", "生产环境", "生产", "vm", "虚拟机", "power", "state"}
+    for p in patterns:
+        m = re.search(p, message, re.I)
+        if not m:
+            continue
+        candidate = (m.group(1) or "").strip()
+        if candidate and candidate.lower() not in stopwords:
+            return candidate
+    return None
+
+
+def _find_vm_by_name(inventory: dict[str, Any], vm_name: str) -> dict[str, Any] | None:
+    vms = inventory.get("virtual_machines", []) if isinstance(inventory, dict) else []
+    name_l = vm_name.lower()
+    for vm in vms:
+        if str(vm.get("name", "")).lower() == name_l:
+            return vm
+    for vm in vms:
+        if name_l in str(vm.get("name", "")).lower():
+            return vm
+    return None
+
+
+def _extract_power_action(message: str) -> str | None:
+    lowered = message.lower()
+    if any(k in lowered for k in ("power off", "turn off", "shutdown", "close", "stop")) or any(
+        k in message for k in ("关闭", "关机", "断电")
+    ):
+        return "off"
+    if any(k in lowered for k in ("power on", "turn on", "boot", "open", "start")) or any(
+        k in message for k in ("打开", "开启", "开机", "启动", "上电")
+    ):
+        return "on"
+    return None
+
+
+def _is_vm_power_action_intent(message: str) -> bool:
+    action = _extract_power_action(message)
+    vm_name = _extract_vm_name_from_message(message)
+    lowered = message.lower()
+    has_context = any(k in lowered for k in ("vcenter", "vsphere", "vm")) or any(
+        k in message for k in ("虚拟机", "电源")
+    )
+    return bool(action and vm_name and has_context)
+
+
+def _extract_host_target_from_message(message: str) -> str | None:
+    ip_match = HOST_IP_PATTERN.search(message)
+    if ip_match:
+        return ip_match.group(0)
+    patterns = [
+        r"(?:主机|host)\s*[:：]?\s*([A-Za-z0-9._:-]+)",
+        r"([A-Za-z0-9._:-]+)\s*(?:主机|host)",
+    ]
+    stopwords = {"vcenter", "vsphere", "prod", "生产", "生产环境", "health", "status", "健康状况", "分析"}
+    for pattern in patterns:
+        m = re.search(pattern, message, re.I)
+        if not m:
+            continue
+        target = (m.group(1) or "").strip()
+        if target and target.lower() not in stopwords:
+            return target
+    return None
+
+
+def _match_host_from_inventory(hosts: list[dict[str, Any]], target: str) -> dict[str, Any] | None:
+    target_l = target.strip().lower()
+    for host in hosts:
+        name_l = str(host.get("name", "")).strip().lower()
+        host_id_l = str(host.get("host_id", "")).strip().lower()
+        if target_l and (target_l == name_l or target_l == host_id_l):
+            return host
+    for host in hosts:
+        name_l = str(host.get("name", "")).strip().lower()
+        host_id_l = str(host.get("host_id", "")).strip().lower()
+        if target_l and (target_l in name_l or target_l in host_id_l):
+            return host
+    return None
+
+
+def _as_percent(used: Any, total: Any) -> float | None:
+    try:
+        used_f = float(used)
+        total_f = float(total)
+        if total_f <= 0:
+            return None
+        return round((used_f / total_f) * 100, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _vcenter_connection_input() -> dict[str, Any]:
+    return {
+        "endpoint": VCENTER_ENDPOINT,
+        "username": VCENTER_USERNAME,
+        "password": VCENTER_PASSWORD,
+        "insecure": True,
+    }
+
+
 def _is_confirmation(message: str) -> bool:
     return bool(CONFIRM_KEYWORDS.search(message.strip()))
 
@@ -105,7 +231,7 @@ async def _query_vcenter_prod_inventory() -> dict | None:
         "?connection_id=conn-vcenter-prod"
     )
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=240.0) as client:
             resp = await client.get(url)
         body = resp.json()
         if not body.get("success"):
@@ -113,6 +239,27 @@ async def _query_vcenter_prod_inventory() -> dict | None:
         return body.get("data", {})
     except Exception:
         return None
+
+
+async def _invoke_tool_gateway(tool_name: str, input_payload: dict[str, Any]) -> dict[str, Any] | None:
+    url = f"{TOOL_GATEWAY_URL.rstrip('/')}/api/v1/invoke/{tool_name}"
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(url, json={"input": input_payload, "dry_run": False})
+        body = resp.json()
+        if not body.get("success"):
+            return None
+        return body.get("data", {})
+    except Exception:
+        return None
+
+
+async def _write_audit_log(payload: dict[str, Any]) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            await client.post(f"{EVENT_INGESTION_URL.rstrip('/')}/api/v1/audit/logs", json=payload)
+    except Exception:
+        return
 
 
 def _normalize_requested_columns(message: str) -> tuple[list[str], list[str]]:
@@ -278,6 +425,8 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
     pending = _pending_intents.get(session_id) == PENDING_INTENT
     is_query = _is_vcenter_prod_vm_query(message)
     is_export_query = _is_vcenter_prod_vm_export_query(message)
+    is_power_query = _is_vcenter_prod_vm_power_query(message)
+    is_power_action = _is_vm_power_action_intent(message)
     is_confirm = _is_confirmation(message)
 
     if is_export_query:
@@ -333,6 +482,251 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                 "用户希望导出 vCenter 生产环境虚拟机列表。",
                 "识别导出意图并调用导出接口。",
                 "导出任务已创建并返回下载入口。",
+            ),
+        }
+
+    if is_power_action:
+        vm_name = _extract_vm_name_from_message(message)
+        action = _extract_power_action(message)
+        if not vm_name or not action:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": "已识别为虚拟机电源操作，但未完整解析到操作和虚拟机名称，请重试。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望执行虚拟机电源操作。",
+                    "解析操作类型和虚拟机名称。",
+                    "解析参数不完整，等待用户重试。",
+                ),
+            }
+        inventory = await _query_vcenter_prod_inventory()
+        if not inventory:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"执行失败：无法访问 conn-vcenter-prod，未能处理 {vm_name} 的电源操作。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望执行虚拟机电源操作。",
+                    "先查询 vCenter inventory 定位目标虚拟机。",
+                    "inventory 查询失败。",
+                ),
+            }
+        vm = _find_vm_by_name(inventory, vm_name)
+        if not vm:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"在 conn-vcenter-prod 中未找到虚拟机 {vm_name}，请确认名称。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望执行虚拟机电源操作。",
+                    "查询 inventory 并按名称匹配虚拟机。",
+                    "目标虚拟机不存在。",
+                ),
+            }
+
+        current_state = str(vm.get("power_state", "")).lower()
+        if action == "on" and current_state in {"poweredon", "powered_on", "on"}:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"{vm.get('name', vm_name)} 当前已是开机状态（{vm.get('power_state')}），无需重复执行。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望打开虚拟机电源。",
+                    "检查当前电源状态后决定是否执行。",
+                    "目标虚拟机已开机。",
+                ),
+            }
+        if action == "off" and current_state in {"poweredoff", "powered_off", "off"}:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"{vm.get('name', vm_name)} 当前已是关机状态（{vm.get('power_state')}），无需重复执行。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望关闭虚拟机电源。",
+                    "检查当前电源状态后决定是否执行。",
+                    "目标虚拟机已关机。",
+                ),
+            }
+
+        vm_id = vm.get("vm_id")
+        tool_name = "vmware.vm_power_on" if action == "on" else "vmware.vm_power_off"
+        result = await _invoke_tool_gateway(
+            tool_name,
+            {"connection": _vcenter_connection_input(), "vm_id": vm_id},
+        )
+        if not result:
+            await _write_audit_log(
+                {
+                    "event_type": "execution_failed",
+                    "severity": "warning",
+                    "actor": "ResourceQueryAgent",
+                    "actor_type": "agent",
+                    "action": tool_name,
+                    "resource_type": "VirtualMachine",
+                    "resource_id": vm_id,
+                    "resource_name": vm.get("name", vm_name),
+                    "outcome": "failure",
+                    "reason": "tool call failed",
+                    "metadata": {
+                        "connection_id": "conn-vcenter-prod",
+                        "requested_action": action,
+                    },
+                }
+            )
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"已识别电源操作请求，但执行 {tool_name} 失败，请稍后重试。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望执行虚拟机电源操作。",
+                    "调用 vmware 电源控制工具执行动作。",
+                    "工具调用失败。",
+                ),
+            }
+        await _write_audit_log(
+            {
+                "event_type": "execution_completed",
+                "severity": "info",
+                "actor": "ResourceQueryAgent",
+                "actor_type": "agent",
+                "action": tool_name,
+                "resource_type": "VirtualMachine",
+                "resource_id": vm_id,
+                "resource_name": vm.get("name", vm_name),
+                "outcome": "success",
+                "metadata": {
+                    "connection_id": "conn-vcenter-prod",
+                    "requested_action": action,
+                    "task_id": result.get("task_id"),
+                    "power_state_before": vm.get("power_state"),
+                },
+            }
+        )
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": (
+                f"已触发 {vm.get('name', vm_name)} 的电源{'开启' if action == 'on' else '关闭'}操作。\n"
+                f"- VM ID: {vm_id}\n"
+                f"- 当前状态(操作前): {vm.get('power_state')}\n"
+                f"- 任务ID: {result.get('task_id', 'N/A')}"
+            ),
+            "agent_name": "ResourceQueryAgent",
+            "tool_traces": [
+                {
+                    "tool_name": tool_name,
+                    "gateway": "tool-gateway",
+                    "input_summary": f'{{"connection_id":"conn-vcenter-prod","vm_id":"{vm_id}"}}',
+                    "output_summary": f'task_id={result.get("task_id", "N/A")}',
+                    "duration_ms": 0,
+                    "status": "success",
+                    "timestamp": _now(),
+                }
+            ],
+            "evidence_refs": [],
+            "evidences": [],
+            "reasoning_summary": _reasoning_summary(
+                "用户希望执行虚拟机电源操作。",
+                "匹配目标虚拟机后调用 vmware 电源控制工具。",
+                f"已触发 {tool_name}。",
+            ),
+        }
+
+    if is_power_query:
+        vm_name = _extract_vm_name_from_message(message)
+        if not vm_name:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": "已识别为 vCenter 生产环境虚拟机电源状态查询，但未解析到虚拟机名称，请补充例如：Test-VM。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望查询 vCenter 生产环境虚拟机电源状态。",
+                    "调用 inventory 接口前先解析虚拟机名称。",
+                    "未提取到虚拟机名称，等待用户补充。",
+                ),
+            }
+        inventory = await _query_vcenter_prod_inventory()
+        if not inventory:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"查询失败：无法访问 conn-vcenter-prod，未能获取虚拟机 {vm_name} 的电源状态。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望查询指定虚拟机电源状态。",
+                    "调用 vCenter inventory 接口定位虚拟机。",
+                    "inventory 查询失败。",
+                ),
+            }
+        vm = _find_vm_by_name(inventory, vm_name)
+        if not vm:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": f"在 conn-vcenter-prod 中未找到虚拟机 {vm_name}，请确认名称是否正确。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望查询指定虚拟机电源状态。",
+                    "调用 inventory 并按名称检索虚拟机。",
+                    "未检索到目标虚拟机。",
+                ),
+            }
+        power_state = vm.get("power_state", "unknown")
+        vm_id = vm.get("vm_id", "")
+        summary = inventory.get("summary", {})
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": (
+                "vCenter 生产环境（conn-vcenter-prod）虚拟机电源状态查询结果：\n\n"
+                f"- 虚拟机名称：{vm.get('name', vm_name)}\n"
+                f"- 虚拟机ID：{vm_id}\n"
+                f"- 电源状态：{power_state}"
+            ),
+            "agent_name": "ResourceQueryAgent",
+            "tool_traces": [
+                {
+                    "tool_name": "vmware.get_vcenter_inventory",
+                    "gateway": "vmware-skill-gateway",
+                    "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+                    "output_summary": (
+                        f"vms={summary.get('vm_count', 0)}, matched_vm={vm.get('name', vm_name)}, "
+                        f"power_state={power_state}"
+                    ),
+                    "duration_ms": 0,
+                    "status": "success",
+                    "timestamp": _now(),
+                }
+            ],
+            "evidence_refs": [],
+            "evidences": [],
+            "reasoning_summary": _reasoning_summary(
+                "用户希望查询 vCenter 生产环境指定虚拟机电源状态。",
+                "调用 inventory 接口并按 VM 名称匹配目标对象。",
+                f"已返回 {vm.get('name', vm_name)} 的电源状态：{power_state}。",
             ),
         }
 
@@ -400,46 +794,181 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
         }
 
     is_diag = bool(DIAGNOSIS_KEYWORDS.search(message))
+    if is_diag and VMWARE_KEYWORDS.search(message):
+        inventory = await _query_vcenter_prod_inventory()
+        if not inventory:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": "诊断失败：无法获取 conn-vcenter-prod 的实时资源数据，请稍后重试。",
+                "agent_name": "RCAAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "root_cause_candidates": [],
+                "recommended_actions": ["检查 vCenter 连接配置与网关服务状态后重试"],
+                "diagnosis_id": f"dg-{uuid.uuid4().hex[:12]}",
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望诊断 vCenter 主机健康状态。",
+                    "fallback 路径尝试读取实时 inventory 并定位目标主机。",
+                    "未获取到实时数据，未使用 mock 返回。",
+                ),
+            }
+
+        host_target = _extract_host_target_from_message(message)
+        if host_target:
+            hosts = inventory.get("hosts", []) if isinstance(inventory.get("hosts", []), list) else []
+            matched_host = _match_host_from_inventory(hosts, host_target)
+            summary = inventory.get("summary", {})
+            if not matched_host:
+                sample_hosts = [str(h.get("name", "")) for h in hosts[:8] if h.get("name")]
+                return {
+                    "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                    "assistant_message": (
+                        f"未在 conn-vcenter-prod 中找到主机 {host_target}，当前主机样例："
+                        + (", ".join(sample_hosts) if sample_hosts else "无")
+                    ),
+                    "agent_name": "RCAAgent",
+                    "tool_traces": [
+                        {
+                            "tool_name": "vmware.get_vcenter_inventory",
+                            "gateway": "vmware-skill-gateway",
+                            "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+                            "output_summary": (
+                                f"clusters={summary.get('cluster_count', 0)}, "
+                                f"hosts={summary.get('host_count', 0)}, vms={summary.get('vm_count', 0)}"
+                            ),
+                            "duration_ms": 0,
+                            "status": "success",
+                            "timestamp": _now(),
+                        }
+                    ],
+                    "evidence_refs": ["ev-fallback-host-not-found"],
+                    "evidences": [
+                        {
+                            "evidence_id": "ev-fallback-host-not-found",
+                            "source_type": "inventory",
+                            "summary": f"在 vCenter 生产环境中未匹配到主机 {host_target}",
+                            "confidence": 0.95,
+                            "timestamp": _now(),
+                        }
+                    ],
+                    "root_cause_candidates": [
+                        {"description": "目标主机不存在或名称/IP 不一致", "confidence": 0.9, "category": "input"}
+                    ],
+                    "recommended_actions": ["核对主机名称/IP", "先查询主机清单确认目标对象"],
+                    "diagnosis_id": f"dg-{uuid.uuid4().hex[:12]}",
+                    "reasoning_summary": _reasoning_summary(
+                        "用户希望分析指定主机健康状况。",
+                        "读取实时主机清单并按目标名称/IP 匹配。",
+                        "未匹配到目标主机。",
+                    ),
+                }
+
+            host_id = matched_host.get("host_id")
+            source = matched_host
+            cpu_percent = source.get("cpu_usage_percent")
+            if cpu_percent is None:
+                cpu_percent = _as_percent(source.get("cpu_usage_mhz"), source.get("cpu_mhz"))
+            memory_percent = source.get("memory_usage_percent")
+            if memory_percent is None:
+                memory_percent = _as_percent(source.get("memory_usage_mb"), source.get("memory_mb"))
+            overall_status = str(source.get("overall_status", "unknown"))
+            connection_state = str(source.get("connection_state", "unknown"))
+            vm_count = source.get("vm_count", 0)
+            host_name = str(source.get("name") or host_target)
+            conclusion = "该主机当前整体健康。"
+            if overall_status.lower() not in {"green", "gray"}:
+                conclusion = "该主机处于非健康状态，建议优先处理告警。"
+            if isinstance(cpu_percent, (int, float)) and cpu_percent >= 85:
+                conclusion = "该主机 CPU 压力偏高，建议尽快排查负载与资源分配。"
+            if isinstance(memory_percent, (int, float)) and memory_percent >= 90:
+                conclusion = "该主机内存压力偏高，建议尽快排查内存占用与回收。"
+
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": (
+                    f"已完成对主机 {host_name}（目标={host_target}）的健康分析：\n\n"
+                    f"- 主机ID：{source.get('host_id', host_id or 'N/A')}\n"
+                    f"- 连接状态：{connection_state}\n"
+                    f"- 总体状态：{overall_status}\n"
+                    f"- CPU 使用率：{cpu_percent if cpu_percent is not None else 'N/A'}%\n"
+                    f"- 内存使用率：{memory_percent if memory_percent is not None else 'N/A'}%\n"
+                    f"- 承载虚拟机数：{vm_count}\n\n"
+                    f"结论：{conclusion}"
+                ),
+                "agent_name": "RCAAgent",
+                "tool_traces": [
+                    {
+                        "tool_name": "vmware.get_vcenter_inventory",
+                        "gateway": "vmware-skill-gateway",
+                        "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+                        "output_summary": f"matched_host={host_name}",
+                        "duration_ms": 0,
+                        "status": "success",
+                        "timestamp": _now(),
+                    },
+                ],
+                "evidence_refs": ["ev-fallback-host-health"],
+                "evidences": [
+                    {
+                        "evidence_id": "ev-fallback-host-health",
+                        "source_type": "host_detail",
+                        "summary": (
+                            f"主机 {host_name} 状态={overall_status}, "
+                            f"CPU={cpu_percent if cpu_percent is not None else 'N/A'}%, "
+                            f"Memory={memory_percent if memory_percent is not None else 'N/A'}%"
+                        ),
+                        "confidence": 0.93,
+                        "timestamp": _now(),
+                    }
+                ],
+                "root_cause_candidates": [
+                    {"description": conclusion, "confidence": 0.9, "category": "infrastructure"}
+                ],
+                "recommended_actions": [
+                    "检查该主机最近告警与硬件事件",
+                    "核对该主机承载虚拟机的资源占用与热点分布",
+                ],
+                "diagnosis_id": f"dg-{uuid.uuid4().hex[:12]}",
+                "reasoning_summary": _reasoning_summary(
+                    "用户希望分析指定 vCenter 主机健康状况。",
+                    "先查询 inventory 锁定目标主机，再调用 host detail 获取实时指标。",
+                    "已返回目标主机的健康分析结果。",
+                ),
+            }
+
+    if is_diag and (VMWARE_KEYWORDS.search(message) or K8S_KEYWORDS.search(message)):
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": "诊断失败：fallback 路径当前未获取到该类型的实时数据，请稍后重试。",
+            "agent_name": "RCAAgent",
+            "tool_traces": [],
+            "evidence_refs": [],
+            "evidences": [],
+            "root_cause_candidates": [],
+            "recommended_actions": ["检查编排服务状态后重试"],
+            "diagnosis_id": f"dg-{uuid.uuid4().hex[:12]}",
+            "reasoning_summary": _reasoning_summary(
+                "用户希望进行基础设施诊断。",
+                "fallback 路径尝试调用实时资源接口。",
+                "未获取到足够实时数据，未使用 mock 返回。",
+            ),
+        }
+
     return {
         "message_id": f"msg-{uuid.uuid4().hex[:10]}",
         "assistant_message": f"[本地模式] 收到：{message}",
-        "agent_name": "RCAAgent" if is_diag else "Orchestrator",
-        "tool_traces": [
-            {
-                "tool_name": "vmware.get_host_detail",
-                "gateway": "vmware-skill-gateway",
-                "input_summary": '{"host_id":"host-33"}',
-                "output_summary": "CPU: 97.3%",
-                "duration_ms": 320,
-                "status": "success",
-                "timestamp": _now(),
-            }
-        ]
-        if is_diag
-        else [],
-        "evidence_refs": ["ev-fallback-1"] if is_diag else [],
-        "evidences": [
-            {
-                "evidence_id": "ev-fallback-1",
-                "source_type": "metric",
-                "summary": "CPU 97.3% (fallback)",
-                "confidence": 0.9,
-                "timestamp": _now(),
-            }
-        ]
-        if is_diag
-        else [],
-        "root_cause_candidates": [
-            {"description": "Fallback diagnosis", "confidence": 0.85, "category": "unknown"}
-        ]
-        if is_diag
-        else None,
-        "recommended_actions": ["检查主机指标"] if is_diag else None,
-        "diagnosis_id": f"dg-{uuid.uuid4().hex[:12]}" if is_diag else None,
+        "agent_name": "Orchestrator",
+        "tool_traces": [],
+        "evidence_refs": [],
+        "evidences": [],
+        "root_cause_candidates": None,
+        "recommended_actions": None,
+        "diagnosis_id": None,
         "reasoning_summary": _reasoning_summary(
             "用户提出了运维问答或诊断请求。",
             "根据关键词选择本地 fallback 路径。",
-            "已返回 fallback 结果。",
+            "已返回基础回复，未使用 mock 诊断数据。",
         ),
     }
 
@@ -655,3 +1184,4 @@ async def download_export_file(export_id: str):
         media_type=rec.mime_type,
         filename=rec.file_name,
     )
+

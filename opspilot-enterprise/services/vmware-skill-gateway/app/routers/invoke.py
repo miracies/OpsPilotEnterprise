@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import inspect
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -19,59 +18,96 @@ class InvokeBody(BaseModel):
 
 @router.post("/{tool_name}")
 async def invoke(tool_name: str, body: InvokeBody) -> dict:
-    tool_map: dict[str, Callable[[], Any]] = {
-        "vmware.get_vcenter_inventory": lambda: query.get_vcenter_inventory(
-            query.ConnectionBody(connection=body.input.get("connection"))
-        ),
-        "vmware.get_vm_detail": lambda: query.get_vm_detail(
-            query.VmIdBody(vm_id=body.input["vm_id"], connection=body.input.get("connection"))
-        ),
-        "vmware.get_host_detail": lambda: query.get_host_detail(
-            query.HostIdBody(host_id=body.input["host_id"], connection=body.input.get("connection"))
-        ),
-        "vmware.get_cluster_detail": lambda: query.get_cluster_detail(
-            query.ClusterIdBody(cluster_id=body.input["cluster_id"], connection=body.input.get("connection"))
-        ),
-        "vmware.query_events": lambda: query.query_events(
-            query.QueryEventsBody(
-                object_id=body.input["object_id"],
-                hours=body.input.get("hours", 24),
-                connection=body.input.get("connection"),
+    def _required(key: str) -> Any:
+        val = body.input.get(key)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            raise ValueError(f"missing required input: {key}")
+        return val
+
+    try:
+        if tool_name == "vmware.get_vcenter_inventory":
+            return await query.get_vcenter_inventory(query.ConnectionBody(connection=body.input.get("connection")))
+        if tool_name == "vmware.get_vm_detail":
+            return await query.get_vm_detail(
+                query.VmIdBody(vm_id=str(_required("vm_id")), connection=body.input.get("connection"))
             )
-        ),
-        "vmware.query_metrics": lambda: query.query_metrics(
-            query.QueryMetricsBody(
-                object_id=body.input["object_id"],
-                metric=body.input["metric"],
-                connection=body.input.get("connection"),
+        if tool_name == "vmware.get_host_detail":
+            return await query.get_host_detail(
+                query.HostIdBody(host_id=str(_required("host_id")), connection=body.input.get("connection"))
             )
-        ),
-        "vmware.query_alerts": lambda: query.query_alerts(
-            query.ConnectionBody(connection=body.input.get("connection"))
-        ),
-        "vmware.query_topology": lambda: query.query_topology(
-            query.ConnectionBody(connection=body.input.get("connection"))
-        ),
-        "vmware.create_snapshot": lambda: execute.create_snapshot(
-            execute.CreateSnapshotBody(vm_id=body.input["vm_id"], name=body.input["name"])
-        ),
-        "vmware.vm_migrate": lambda: execute.vm_migrate(
-            execute.VmMigrateBody(
-                vm_id=body.input["vm_id"],
-                target_host_id=body.input["target_host_id"],
-                dry_run=body.dry_run or body.input.get("dry_run", False),
+        if tool_name == "vmware.get_cluster_detail":
+            return await query.get_cluster_detail(
+                query.ClusterIdBody(cluster_id=str(_required("cluster_id")), connection=body.input.get("connection"))
             )
-        ),
-        "vmware.vm_power_on": lambda: execute.vm_power_on(execute.VmIdOnlyBody(vm_id=body.input["vm_id"])),
-        "vmware.vm_power_off": lambda: execute.vm_power_off(execute.VmIdOnlyBody(vm_id=body.input["vm_id"])),
-        "vmware.vm_guest_restart": lambda: execute.vm_guest_restart(
-            execute.VmIdOnlyBody(vm_id=body.input["vm_id"])
-        ),
-    }
-    handler = tool_map.get(tool_name)
-    if not handler:
+        if tool_name == "vmware.query_events":
+            return await query.query_events(
+                query.QueryEventsBody(
+                    object_id=str(_required("object_id")),
+                    hours=body.input.get("hours", 24),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.query_metrics":
+            return await query.query_metrics(
+                query.QueryMetricsBody(
+                    object_id=str(_required("object_id")),
+                    metric=str(_required("metric")),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.query_alerts":
+            return await query.query_alerts(query.ConnectionBody(connection=body.input.get("connection")))
+        if tool_name == "vmware.query_topology":
+            return await query.query_topology(query.ConnectionBody(connection=body.input.get("connection")))
+        if tool_name == "vmware.create_snapshot":
+            return await execute.create_snapshot(
+                execute.CreateSnapshotBody(
+                    vm_id=str(_required("vm_id")),
+                    name=str(_required("name")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.vm_migrate":
+            return execute.vm_migrate(
+                execute.VmMigrateBody(
+                    vm_id=str(_required("vm_id")),
+                    target_host_id=str(_required("target_host_id")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                )
+            )
+        if tool_name == "vmware.vm_power_on":
+            return await execute.vm_power_on(
+                execute.VmIdOnlyBody(
+                    vm_id=str(_required("vm_id")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.vm_power_off":
+            return await execute.vm_power_off(
+                execute.VmIdOnlyBody(
+                    vm_id=str(_required("vm_id")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.vm_guest_restart":
+            return await execute.vm_guest_restart(
+                execute.VmIdOnlyBody(
+                    vm_id=str(_required("vm_id")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.host_restart":
+            return await execute.host_restart(
+                execute.HostIdOnlyBody(
+                    host_id=str(_required("host_id")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                    connection=body.input.get("connection"),
+                )
+            )
         return make_error(f"unsupported vmware tool: {tool_name}")
-    result = handler()
-    if inspect.isawaitable(result):
-        return await result
-    return result
+    except ValueError as exc:
+        return make_error(str(exc))

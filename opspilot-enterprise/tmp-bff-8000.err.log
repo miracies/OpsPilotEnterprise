@@ -1,52 +1,6 @@
-INFO:     Started server process [22628]
+INFO:     Started server process [47820]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
-Traceback (most recent call last):
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 216, in _fetch_vcenter_inventory_data
-    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 144, in _invoke_tool
-    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
-RuntimeError: http://127.0.0.1:8020: All connection attempts failed; http://127.0.0.1:18020: All connection attempts failed
-invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
-Traceback (most recent call last):
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 216, in _fetch_vcenter_inventory_data
-    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 144, in _invoke_tool
-    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
-RuntimeError: http://127.0.0.1:8020: All connection attempts failed; http://127.0.0.1:18020: All connection attempts failed
-invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
-Traceback (most recent call last):
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 216, in _fetch_vcenter_inventory_data
-    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 144, in _invoke_tool
-    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
-RuntimeError: http://127.0.0.1:8020: All connection attempts failed; http://127.0.0.1:18020: All connection attempts failed
-invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
-Traceback (most recent call last):
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 216, in _fetch_vcenter_inventory_data
-    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 144, in _invoke_tool
-    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
-RuntimeError: http://127.0.0.1:8020: All connection attempts failed; http://127.0.0.1:18020: All connection attempts failed
-invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
-Traceback (most recent call last):
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 216, in _fetch_vcenter_inventory_data
-    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 144, in _invoke_tool
-    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
-RuntimeError: http://127.0.0.1:8020: All connection attempts failed; http://127.0.0.1:18020: All connection attempts failed
-invoke tool vmware.get_vcenter_inventory failed, fallback direct gateway
-Traceback (most recent call last):
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 216, in _fetch_vcenter_inventory_data
-    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": connection_input})
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\work\git\OpsPilot\opspilot-enterprise\apps\api-bff\app\routers\resources.py", line 144, in _invoke_tool
-    raise RuntimeError("; ".join(tried_errors) if tried_errors else f"tool failed: {tool_name}")
-RuntimeError: http://127.0.0.1:8020: All connection attempts failed; http://127.0.0.1:18020: All connection attempts failed
+ERROR:    [Errno 10048] error while attempting to bind on address ('127.0.0.1', 8000): [winerror 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.

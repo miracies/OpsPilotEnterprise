@@ -1,6 +1,0 @@
-INFO:     127.0.0.1:51335 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55469 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55477 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55491 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51931 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59211 - "POST /api/v1/orchestrate/chat HTTP/1.1" 200 OK

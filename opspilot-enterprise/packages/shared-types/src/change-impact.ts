@@ -20,9 +20,12 @@ export interface ImpactedObject {
 export interface ChangeImpactResult {
   analysis_id: string;
   target: {
-    type: string;
-    id: string;
-    name: string;
+    target_type: string;
+    target_id: string;
+    environment: string;
+    type?: string;
+    id?: string;
+    name?: string;
   };
   action: string;
   risk_score: number;

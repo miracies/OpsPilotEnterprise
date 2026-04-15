@@ -18,6 +18,7 @@ import {
   ExternalLink,
   Brain,
   CircleDashed,
+  Play,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { cn, formatDate } from "@/lib/utils";
 import { apiFetch } from "@/lib/api";
 import type { ChatSession, ChatMessage, ToolTrace } from "@opspilot/shared-types";
+import Link from "next/link";
 
 interface Evidence {
   evidence_id: string;
@@ -143,6 +145,7 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const executionHref = activeSession ? `/executions?session_id=${activeSession}` : "/executions";
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -531,6 +534,12 @@ export default function ChatPage() {
                          focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all
                          disabled:opacity-60"
             />
+            <Link href={executionHref}>
+              <Button size="md" variant="secondary" className="shrink-0 self-end">
+                <Play className="h-4 w-4" />
+                执行申请
+              </Button>
+            </Link>
             <Button size="md" className="shrink-0 self-end" onClick={handleSend} disabled={sending || !input.trim()}>
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               发送

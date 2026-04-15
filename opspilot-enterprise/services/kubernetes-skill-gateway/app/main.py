@@ -13,6 +13,7 @@ CAPABILITY_TOOLS = [
     "k8s.get_pod_logs",
     "k8s.get_workload_status",
     "k8s.restart_deployment",
+    "k8s.scale_deployment",
 ]
 
 app = FastAPI(title="OpsPilot Kubernetes Skill Gateway")

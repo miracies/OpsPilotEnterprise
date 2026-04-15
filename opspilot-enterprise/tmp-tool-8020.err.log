@@ -1,6 +1,4 @@
-INFO:     Will watch for changes in these directories: ['E:\\work\\git\\OpsPilot\\opspilot-enterprise\\services\\tool-gateway']
-INFO:     Uvicorn running on http://0.0.0.0:8020 (Press CTRL+C to quit)
-INFO:     Started reloader process [99840] using WatchFiles
-INFO:     Started server process [91924]
+INFO:     Started server process [44400]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8020 (Press CTRL+C to quit)

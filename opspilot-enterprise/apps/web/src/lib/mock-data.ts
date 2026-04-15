@@ -299,7 +299,14 @@ export const mockChatMessages: ChatMessage[] = [
 
 export const mockChangeImpactResult: ChangeImpactResult = {
   analysis_id: "cia-001",
-  target: { type: "VirtualMachine", id: "vm-201", name: "app-server-01" },
+  target: {
+    target_type: "VirtualMachine",
+    target_id: "vm-201",
+    environment: "prod",
+    type: "VirtualMachine",
+    id: "vm-201",
+    name: "app-server-01",
+  },
   action: "vm_migrate",
   risk_score: 45,
   risk_level: "medium",

@@ -1,9 +1,14 @@
 """BFF router: Policy management."""
 from __future__ import annotations
+
+import os
+
+import httpx
 from fastapi import APIRouter
-from opspilot_schema.envelope import make_success
+from opspilot_schema.envelope import make_error, make_success
 
 router = APIRouter(tags=["policies"])
+GOVERNANCE_SERVICE_URL = os.environ.get("GOVERNANCE_SERVICE_URL", "http://127.0.0.1:8071")
 
 _POLICIES = [
     {"id": "POL-001", "name": "高风险操作审批门控", "description": "凡工具调用风险评分超过 30 分的写操作，必须通过人工审批后方可执行。", "type": "approval_gate", "status": "active", "effect": "require_approval", "scope": ["vmware.vm_migrate", "vmware.vm_power_off", "script_exec"], "conditions": {"risk_score_gt": 30}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-03-01T12:00:00Z", "hit_count": 12, "last_hit_at": "2026-04-05T08:49:00Z", "author": "security-team", "version": "1.1.0", "rego_snippet": "package opspilot.approval\ndefault require_approval = false\nrequire_approval { input.risk_score > 30 }"},
@@ -42,3 +47,22 @@ async def get_policy_hits(policy_id: str):
 @router.patch("/policies/{policy_id}/toggle")
 async def toggle_policy(policy_id: str):
     return make_success({"id": policy_id, "status": "toggled"})
+
+
+@router.post("/policies/simulate")
+async def simulate_policy(context: dict):
+    """Proxy policy simulation to governance evaluate endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{GOVERNANCE_SERVICE_URL.rstrip('/')}/policies/evaluate",
+                json=context,
+            )
+        data = resp.json()
+        if isinstance(data, dict) and all(k in data for k in ("request_id", "success", "message", "timestamp")):
+            return data
+        if resp.is_success:
+            return make_success(data)
+        return make_error(f"governance simulate failed: status={resp.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        return make_error(f"governance simulate unreachable: {exc}")

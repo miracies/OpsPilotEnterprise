@@ -466,3 +466,158 @@ class VCenterService:
                         }
                     )
         return nodes
+
+    async def create_snapshot(self, vm_id: str, name: str) -> dict[str, Any]:
+        def _impl():
+            return self._with_client(lambda content, _: self._create_snapshot_sync(content, vm_id, name))
+
+        return await self._run(_impl)
+
+    def _create_snapshot_sync(self, content: Any, vm_id: str, name: str) -> dict[str, Any]:
+        vm = self._find_vm_by_id(content, vm_id)
+        if vm is None:
+            raise ValueError(f"Virtual machine not found: {vm_id}")
+        task = vm.CreateSnapshot_Task(
+            name=name,
+            description="Created by OpsPilot",
+            memory=False,
+            quiesce=False,
+        )
+        return {
+            "task_id": _moid(task) or f"task-{int(time.time())}",
+            "status": "submitted",
+            "vm_id": vm_id,
+            "snapshot_name": name,
+            "operation": "CreateSnapshot_Task",
+        }
+
+    async def vm_guest_restart(self, vm_id: str) -> dict[str, Any]:
+        def _impl():
+            return self._with_client(lambda content, _: self._vm_guest_restart_sync(content, vm_id))
+
+        return await self._run(_impl)
+
+    def _vm_guest_restart_sync(self, content: Any, vm_id: str) -> dict[str, Any]:
+        vm = self._find_vm_by_id(content, vm_id)
+        if vm is None:
+            raise ValueError(f"Virtual machine not found: {vm_id}")
+        vm.RebootGuest()
+        return {
+            "task_id": f"guest-restart-{int(time.time())}",
+            "status": "submitted",
+            "vm_id": vm_id,
+            "operation": "RebootGuest",
+        }
+
+    async def vm_power_on(self, vm_id: str) -> dict[str, Any]:
+        def _impl():
+            return self._with_client(lambda content, _: self._vm_power_on_sync(content, vm_id))
+
+        return await self._run(_impl)
+
+    def _vm_power_on_sync(self, content: Any, vm_id: str) -> dict[str, Any]:
+        vm = self._find_vm_by_id(content, vm_id)
+        if vm is None:
+            raise ValueError(f"Virtual machine not found: {vm_id}")
+        before_state = str(vm.summary.runtime.powerState)
+        if before_state.lower() in {"poweredon", "powered_on", "on"}:
+            return {
+                "task_id": None,
+                "status": "already_on",
+                "vm_id": vm_id,
+                "operation": "PowerOnVM_Task",
+                "power_state_before": before_state,
+                "power_state_after": before_state,
+            }
+        task = vm.PowerOnVM_Task()
+        result = self._wait_task(task, timeout_seconds=45)
+        return {
+            "task_id": _moid(task) or f"task-{int(time.time())}",
+            "status": result["status"],
+            "vm_id": vm_id,
+            "operation": "PowerOnVM_Task",
+            "power_state_before": before_state,
+            "power_state_after": str(vm.summary.runtime.powerState),
+            "task_message": result.get("message"),
+        }
+
+    async def vm_power_off(self, vm_id: str) -> dict[str, Any]:
+        def _impl():
+            return self._with_client(lambda content, _: self._vm_power_off_sync(content, vm_id))
+
+        return await self._run(_impl)
+
+    def _vm_power_off_sync(self, content: Any, vm_id: str) -> dict[str, Any]:
+        vm = self._find_vm_by_id(content, vm_id)
+        if vm is None:
+            raise ValueError(f"Virtual machine not found: {vm_id}")
+        before_state = str(vm.summary.runtime.powerState)
+        if before_state.lower() in {"poweredoff", "powered_off", "off"}:
+            return {
+                "task_id": None,
+                "status": "already_off",
+                "vm_id": vm_id,
+                "operation": "PowerOffVM_Task",
+                "power_state_before": before_state,
+                "power_state_after": before_state,
+            }
+        task = vm.PowerOffVM_Task()
+        result = self._wait_task(task, timeout_seconds=45)
+        return {
+            "task_id": _moid(task) or f"task-{int(time.time())}",
+            "status": result["status"],
+            "vm_id": vm_id,
+            "operation": "PowerOffVM_Task",
+            "power_state_before": before_state,
+            "power_state_after": str(vm.summary.runtime.powerState),
+            "task_message": result.get("message"),
+        }
+
+    def _wait_task(self, task: Any, timeout_seconds: int = 45) -> dict[str, Any]:
+        started = time.time()
+        while time.time() - started < timeout_seconds:
+            info = getattr(task, "info", None)
+            if info is None:
+                time.sleep(0.8)
+                continue
+            state = str(getattr(info, "state", "")).lower()
+            if state == "success":
+                return {"status": "success", "message": "task completed"}
+            if state == "error":
+                err = getattr(info, "error", None)
+                msg = str(getattr(err, "msg", "task failed")) if err else "task failed"
+                raise RuntimeError(msg)
+            time.sleep(1.0)
+        return {"status": "submitted", "message": "task still running"}
+
+    def _find_vm_by_id(self, content: Any, vm_id: str):
+        for vm in _get_objects(content, vim.VirtualMachine):
+            if _moid(vm) == vm_id:
+                return vm
+        return None
+
+    async def host_restart(self, host_id: str) -> dict[str, Any]:
+        def _impl():
+            return self._with_client(lambda content, _: self._host_restart_sync(content, host_id))
+
+        return await self._run(_impl)
+
+    def _host_restart_sync(self, content: Any, host_id: str) -> dict[str, Any]:
+        host = self._find_host_by_id(content, host_id)
+        if host is None:
+            raise ValueError(f"Host not found: {host_id}")
+        task = host.RebootHost_Task(force=True)
+        result = self._wait_task(task, timeout_seconds=60)
+        return {
+            "task_id": _moid(task) or f"task-{int(time.time())}",
+            "status": result["status"],
+            "host_id": host_id,
+            "operation": "RebootHost_Task",
+            "task_message": result.get("message"),
+        }
+
+    def _find_host_by_id(self, content: Any, host_id: str):
+        for host in _get_objects(content, vim.HostSystem):
+            if _moid(host) == host_id:
+                return host
+        return None

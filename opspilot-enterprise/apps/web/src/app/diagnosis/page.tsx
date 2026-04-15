@@ -1,7 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   FileText, BookOpen, Archive, Wrench,
   CheckCircle2, Clock, Radio, AlertCircle,
@@ -29,6 +29,8 @@ interface DiagnosisData {
   created_at?: string;
 }
 
+const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
+
 const TIMELINE_COLORS: Record<string, string> = {
   event: "bg-red-500 ring-red-100",
   analysis: "bg-blue-500 ring-blue-100",
@@ -49,10 +51,20 @@ const TIMELINE_LABEL: Record<string, string> = {
 };
 
 export default function DiagnosisPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const diagnosisId = searchParams.get("diagnosis_id");
   const [diagData, setDiagData] = useState<DiagnosisData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [actionRunningIndex, setActionRunningIndex] = useState<number | null>(null);
+  const [actionExecResult, setActionExecResult] = useState<{
+    action: string;
+    status: "success" | "error";
+    summary: string;
+    detail?: unknown;
+    tool_name?: string;
+    ts: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!diagnosisId) return;
@@ -87,6 +99,227 @@ export default function DiagnosisPage() {
   const title = useMock ? incident!.title : diagData!.description;
   const diagId = useMock ? undefined : diagData!.diagnosis_id;
   const sessionId = useMock ? undefined : diagData!.session_id;
+  const incidentId = useMock ? incident?.id : undefined;
+  const primaryTarget = useMock ? incident?.affected_objects?.[0] : undefined;
+  const executionHref = (() => {
+    const query = new URLSearchParams();
+    if (incidentId) query.set("incident_id", incidentId);
+    if (sessionId) query.set("session_id", sessionId);
+    if (primaryTarget) {
+      query.set(
+        "targets",
+        JSON.stringify([
+          {
+            object_id: primaryTarget.object_id,
+            object_name: primaryTarget.object_name,
+            object_type: primaryTarget.object_type,
+          },
+        ])
+      );
+    }
+    return `/executions?${query.toString()}`;
+  })();
+
+  function buildExecutionHrefForAction(actionText: string): string {
+    const query = new URLSearchParams();
+    if (incidentId) query.set("incident_id", incidentId);
+    if (sessionId) query.set("session_id", sessionId);
+
+    const lower = actionText.toLowerCase();
+    let toolName = "vmware.create_snapshot";
+    if (
+      lower.includes("host") ||
+      actionText.includes("主机") ||
+      actionText.includes("硬件") ||
+      actionText.includes("连接")
+    ) {
+      toolName = "vmware.get_host_detail";
+    } else if (lower.includes("vm") || actionText.includes("虚拟机")) {
+      toolName = "vmware.get_vm_detail";
+    } else if (
+      lower.includes("pod") ||
+      lower.includes("deployment") ||
+      actionText.includes("容器")
+    ) {
+      toolName = "k8s.get_workload_status";
+    }
+    query.set("tool_name", toolName);
+
+    if (primaryTarget) {
+      query.set(
+        "targets",
+        JSON.stringify([
+          {
+            object_id: primaryTarget.object_id,
+            object_name: primaryTarget.object_name,
+            object_type: primaryTarget.object_type,
+          },
+        ])
+      );
+    }
+    return `/executions?${query.toString()}`;
+  }
+
+  function classifyReadAction(actionText: string): { tool_name: string; mode: "single_host" | "nonhealthy_hosts" } | null {
+    const lower = actionText.toLowerCase();
+    if (
+      lower.includes("host") ||
+      actionText.includes("主机") ||
+      actionText.includes("硬件") ||
+      actionText.includes("连接")
+    ) {
+      if (actionText.includes("非健康") || lower.includes("unhealthy")) {
+        return { tool_name: "vmware.get_host_detail", mode: "nonhealthy_hosts" };
+      }
+      return { tool_name: "vmware.get_host_detail", mode: "single_host" };
+    }
+    if (lower.includes("vm") || actionText.includes("虚拟机")) {
+      return { tool_name: "vmware.get_vm_detail", mode: "single_host" };
+    }
+    if (lower.includes("pod") || lower.includes("deployment") || actionText.includes("容器")) {
+      return { tool_name: "k8s.get_workload_status", mode: "single_host" };
+    }
+    return null;
+  }
+
+  async function invokeReadAction(actionText: string, index: number) {
+    setActionRunningIndex(index);
+    setActionExecResult(null);
+    try {
+      const matched = classifyReadAction(actionText);
+      if (!matched) {
+        router.push(buildExecutionHrefForAction(actionText));
+        return;
+      }
+
+      if (matched.tool_name === "vmware.get_host_detail" && matched.mode === "nonhealthy_hosts") {
+        const inventory = await apiFetch<{ success: boolean; data?: { hosts?: Array<Record<string, unknown>> }; error?: string }>(
+          "/api/v1/resources/vcenter/inventory?connection_id=conn-vcenter-prod"
+        );
+        if (!inventory.success) {
+          throw new Error(inventory.error || "获取 vCenter 资源失败");
+        }
+        const hosts = (inventory.data?.hosts || []) as Array<Record<string, unknown>>;
+        const unhealthyHosts = hosts.filter((h) => {
+          const s = String(h.overall_status || "").toLowerCase();
+          const c = String(h.connection_state || "").toLowerCase();
+          return (s && s !== "green") || (c && c !== "connected");
+        });
+        if (unhealthyHosts.length === 0) {
+          setActionExecResult({
+            action: actionText,
+            status: "success",
+            summary: "未发现非健康主机，连接与总体状态均正常。",
+            detail: { nonhealthy_count: 0 },
+            tool_name: "vmware.get_vcenter_inventory",
+            ts: new Date().toISOString(),
+          });
+          return;
+        }
+        const sample = unhealthyHosts.slice(0, 5);
+        const results = await Promise.all(
+          sample.map(async (h) => {
+            const hostId = String(h.host_id || "");
+            const hostName = String(h.name || hostId);
+            const resp = await apiFetch<{ success: boolean; data?: unknown; error?: string }>(
+              "/api/v1/tools/vmware.get_host_detail/invoke",
+              {
+                method: "POST",
+                body: JSON.stringify({ input: { host_id: hostId } }),
+              }
+            );
+            return {
+              host_id: hostId,
+              host_name: hostName,
+              success: !!resp.success,
+              data: resp.data,
+              error: resp.error,
+            };
+          })
+        );
+        const okCount = results.filter((r) => r.success).length;
+        setActionExecResult({
+          action: actionText,
+          status: okCount > 0 ? "success" : "error",
+          summary: `已检查 ${sample.length} 台非健康主机，成功 ${okCount} 台，失败 ${sample.length - okCount} 台。`,
+          detail: { checked_hosts: results, total_nonhealthy: unhealthyHosts.length },
+          tool_name: matched.tool_name,
+          ts: new Date().toISOString(),
+        });
+        return;
+      }
+
+      const input: Record<string, unknown> = {};
+      if (primaryTarget?.object_id) {
+        if (matched.tool_name === "vmware.get_host_detail") {
+          input.host_id = primaryTarget.object_id;
+        } else if (matched.tool_name === "vmware.get_vm_detail") {
+          input.vm_id = primaryTarget.object_id;
+        }
+      }
+
+      if (matched.tool_name === "vmware.get_host_detail" && !input.host_id) {
+        const inventory = await apiFetch<{ success: boolean; data?: { hosts?: Array<Record<string, unknown>> }; error?: string }>(
+          "/api/v1/resources/vcenter/inventory?connection_id=conn-vcenter-prod"
+        );
+        if (!inventory.success) {
+          throw new Error(inventory.error || "获取 vCenter 资源失败");
+        }
+        const hosts = (inventory.data?.hosts || []) as Array<Record<string, unknown>>;
+        const text = `${title} ${diagData?.description || ""} ${actionText}`;
+        const ip = text.match(IPV4_RE)?.[0];
+        if (ip) {
+          const m = hosts.find((h) => String(h.name || "").includes(ip));
+          if (m?.host_id) input.host_id = String(m.host_id);
+        }
+        if (!input.host_id) {
+          const m = hosts.find((h) => {
+            const s = String(h.overall_status || "").toLowerCase();
+            const c = String(h.connection_state || "").toLowerCase();
+            return (s && s !== "green") || (c && c !== "connected");
+          });
+          if (m?.host_id) input.host_id = String(m.host_id);
+        }
+        if (!input.host_id && hosts[0]?.host_id) {
+          input.host_id = String(hosts[0].host_id);
+        }
+        if (!input.host_id) {
+          throw new Error("未识别到可检查的主机，请先在诊断中指定主机。");
+        }
+      }
+      const response = await apiFetch<{ success: boolean; data?: unknown; error?: string }>(
+        `/api/v1/tools/${matched.tool_name}/invoke`,
+        {
+          method: "POST",
+          body: JSON.stringify({ input }),
+        }
+      );
+      const summary =
+        response.success
+          ? "读取动作执行成功，已回填结果。"
+          : (response.error || "读取动作执行失败").replace(
+              /upstream returned non-JSON \(status 500\).*/i,
+              "工具执行失败：目标参数缺失或上游服务异常，请重试。"
+            );
+      setActionExecResult({
+        action: actionText,
+        status: response.success ? "success" : "error",
+        summary,
+        detail: response.data,
+        tool_name: matched.tool_name,
+        ts: new Date().toISOString(),
+      });
+    } catch (err) {
+      setActionExecResult({
+        action: actionText,
+        status: "error",
+        summary: err instanceof Error ? err.message : "读取动作执行失败",
+        ts: new Date().toISOString(),
+      });
+    } finally {
+      setActionRunningIndex(null);
+    }
+  }
 
   if (loading) {
     return (
@@ -121,7 +354,7 @@ export default function DiagnosisPage() {
               <Download className="h-3.5 w-3.5" />
               导出报告
             </Button>
-            <Button variant="primary" size="sm">
+            <Button variant="primary" size="sm" onClick={() => router.push(executionHref)}>
               <Play className="h-3.5 w-3.5" />
               发起执行申请
             </Button>
@@ -170,7 +403,7 @@ export default function DiagnosisPage() {
                   <CardTitle>相关告警</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-1.5">
-                  {["CPU > 95% 持续 30min", "CPU ready time > 10%"].map((alert) => (
+                  {["CPU > 95% 鎸佺画 30min", "CPU ready time > 10%"].map((alert) => (
                     <div key={alert} className="flex items-start gap-1.5 text-xs text-slate-700">
                       <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-0.5" />
                       {alert}
@@ -338,11 +571,35 @@ export default function DiagnosisPage() {
                     </span>
                     <span className="text-sm text-slate-700">{a}</span>
                   </div>
-                  <Button variant="ghost" size="xs" className="opacity-0 group-hover:opacity-100 transition-opacity text-blue-600 hover:bg-blue-100">
-                    <Play className="h-3 w-3" /> 执行
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-blue-600 hover:bg-blue-100"
+                    disabled={actionRunningIndex === i}
+                    onClick={() => void invokeReadAction(a, i)}
+                  >
+                    {actionRunningIndex === i ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />} 执行
                   </Button>
                 </div>
               ))}
+              {actionExecResult && (
+                <div className={cn(
+                  "rounded-lg border px-3 py-2 text-xs space-y-1",
+                  actionExecResult.status === "success"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-red-200 bg-red-50 text-red-700"
+                )}>
+                  <div className="font-semibold">最近执行：{actionExecResult.action}</div>
+                  <div>工具：{actionExecResult.tool_name ?? "N/A"}</div>
+                  <div>结果：{actionExecResult.summary}</div>
+                  <div>时间：{formatDate(actionExecResult.ts)}</div>
+                  {actionExecResult.detail != null && (
+                    <pre className="max-h-40 overflow-auto rounded bg-white/60 p-2 text-[11px] text-slate-700">
+                      {JSON.stringify(actionExecResult.detail, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -409,7 +666,7 @@ export default function DiagnosisPage() {
                 ) : evidences.filter((e) => e.source_type === "kb").map((e) => (
                   <div key={e.evidence_id} className="evidence-block">
                     <p className="font-semibold text-slate-700 mb-0.5">{e.summary}</p>
-                    <p className="text-slate-400 mt-1">置信度: {(e.confidence * 100).toFixed(0)}%</p>
+                    <p className="text-slate-400 mt-1">置信度 {(e.confidence * 100).toFixed(0)}%</p>
                   </div>
                 ))
               ) : (
@@ -437,7 +694,7 @@ export default function DiagnosisPage() {
                   <BookOpen className="h-3.5 w-3.5" /> 相关知识库
                 </Button>
               </Link>
-              <Link href="/approvals">
+              <Link href={executionHref}>
                 <Button variant="primary" size="sm">
                   <ShieldCheck className="h-3.5 w-3.5" /> 发起修复审批
                 </Button>
@@ -449,3 +706,5 @@ export default function DiagnosisPage() {
     </div>
   );
 }
+
+

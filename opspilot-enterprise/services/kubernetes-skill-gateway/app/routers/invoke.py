@@ -45,6 +45,15 @@ async def invoke(tool_name: str, body: InvokeBody) -> dict:
                 connection=body.input.get("connection"),
             )
         ),
+        "k8s.scale_deployment": lambda: execute.scale_deployment(
+            execute.ScaleDeploymentBody(
+                namespace=body.input["namespace"],
+                deployment_name=body.input["deployment_name"],
+                replicas=int(body.input["replicas"]),
+                dry_run=body.dry_run or body.input.get("dry_run", False),
+                connection=body.input.get("connection"),
+            )
+        ),
     }
     handler = tool_map.get(tool_name)
     if not handler:
