@@ -15,7 +15,14 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app.agents import run_multi_agent_rootcause
+from app.audit.router import router as audit_router
+from app.intent_recovery.router import router as intent_router
+from app.interactions.router import router as interactions_router
 from app.llm_client import DIAGNOSIS_SYSTEM_PROMPT, SYSTEM_PROMPT, chat_completion, check_llm_health
+from app.pipeline.orchestrate_chat_v2 import router as orchestrator_v2_router
+from app.policy.router import router as policy_router
+from app.resume.router import router as resume_router
+from app.storage.db import init_db
 from opspilot_schema.change_impact import ChangeImpactRequest
 from opspilot_schema.envelope import make_error, make_success
 
@@ -27,6 +34,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="OpsPilot LangGraph Orchestrator")
+app.include_router(intent_router)
+app.include_router(interactions_router)
+app.include_router(policy_router)
+app.include_router(audit_router)
+app.include_router(resume_router)
+app.include_router(orchestrator_v2_router)
 
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
 CHANGE_IMPACT_SERVICE_URL = os.environ.get("CHANGE_IMPACT_SERVICE_URL", "http://127.0.0.1:8040")
@@ -1035,6 +1048,11 @@ def _build_diagnosis(
 async def health() -> dict:
     llm_status = await check_llm_health()
     return make_success({"status": "healthy", "llm": llm_status})
+
+
+@app.on_event("startup")
+async def startup_init() -> None:
+    init_db()
 
 
 @app.post("/api/v1/orchestrate/diagnose")

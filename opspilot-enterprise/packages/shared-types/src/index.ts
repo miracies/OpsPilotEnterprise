@@ -1,8 +1,11 @@
-export * from "./envelope";
+﻿export * from "./envelope";
 export * from "./evidence";
 export * from "./incident";
+export * from "./intent";
+export * from "./interaction";
+export * from "./resume";
 export * from "./chat";
-export * from "./change-impact";
+export type { ChangeImpactRequest, ChangeImpactResult, ImpactedObject, DependencyNode } from "./change-impact";
 export * from "./tool";
 export * from "./approval";
 export * from "./notification";

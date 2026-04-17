@@ -17084,3 +17084,321 @@ Parsing ecmascript source code failed
 ⚠ Fast Refresh had to perform a full reload due to a runtime error.
 ⚠ Fast Refresh had to perform a full reload when ./node_modules/.pnpm/next@16.2.2_@babel+core@7.2_adfc5978a423a2af819d8e4d2c5f7ae4/node_modules/next/dist/shared/lib/router/router.js changed. Read more: https://nextjs.org/docs/messages/fast-refresh-reload
 ⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+[browser] Uncaught Error: ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  20 |         body: JSON.stringify({ selected_choice: selectedChoice ?? null, free_text: freeTex...
+  21 |       });
+> 22 |       setDone(selectedChoice ?? freeText || "已提交");
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  23 |     } finally {
+  24 |       setSubmitting(false);
+  25 |     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+    at <unknown> (Error: ./apps/web/src/components/chat/ClarifyCard.tsx:22:12)
+    at <unknown> (Error: (./apps/web/src/components/chat/ClarifyCard.tsx:22:12)
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+[browser] Uncaught Error: ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  20 |         body: JSON.stringify({ selected_choice: selectedChoice ?? null, free_text: freeTex...
+  21 |       });
+> 22 |       setDone(selectedChoice ?? freeText || "已提交");
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  23 |     } finally {
+  24 |       setSubmitting(false);
+  25 |     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+    at <unknown> (Error: ./apps/web/src/components/chat/ClarifyCard.tsx:22:12)
+    at <unknown> (Error: (./apps/web/src/components/chat/ClarifyCard.tsx:22:12)
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+⨯ ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  [90m20 |[0m         body: [33mJSON[0m.stringify({ selected_choice: selectedChoice ?? [36mnull[0m, free_text: freeTex...
+  [90m21 |[0m       });
+[31m[1m>[0m [90m22 |[0m       setDone(selectedChoice ?? freeText || [32m"已提交"[0m);
+  [90m   |[0m            [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m23 |[0m     } [36mfinally[0m {
+  [90m24 |[0m       setSubmitting([36mfalse[0m);
+  [90m25 |[0m     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+[browser] Uncaught Error: ./apps/web/src/components/chat/ClarifyCard.tsx:22:12
+Nullish coalescing operator(??) requires parens when mixing with logical operators
+  20 |         body: JSON.stringify({ selected_choice: selectedChoice ?? null, free_text: freeTex...
+  21 |       });
+> 22 |       setDone(selectedChoice ?? freeText || "已提交");
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  23 |     } finally {
+  24 |       setSubmitting(false);
+  25 |     }
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Client Component Browser]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./apps/web/src/components/chat/ClarifyCard.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Client Component SSR]
+    ./apps/web/src/app/chat/page.tsx [Server Component]
+
+
+    at <unknown> (Error: ./apps/web/src/components/chat/ClarifyCard.tsx:22:12)
+    at <unknown> (Error: (./apps/web/src/components/chat/ClarifyCard.tsx:22:12)

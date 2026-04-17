@@ -1,6 +1,15 @@
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "recalled";
-export type ApprovalRiskLevel = "low" | "medium" | "high" | "critical";
-export type ApprovalActionType = "vm_migrate" | "vm_power_off" | "snapshot_delete" | "config_change" | "script_exec" | "upgrade" | "rollback" | "other";
+﻿export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "recalled";
+export type ApprovalRiskLevel = "low" | "medium" | "high" | "critical" | "L0" | "L1" | "L2" | "L3" | "L4";
+export type ApprovalActionType =
+  | "vm_migrate"
+  | "vm_power_off"
+  | "snapshot_delete"
+  | "config_change"
+  | "script_exec"
+  | "upgrade"
+  | "rollback"
+  | "other"
+  | string;
 
 export interface ApprovalRequest {
   id: string;
@@ -23,11 +32,20 @@ export interface ApprovalRequest {
   decided_at: string | null;
   decided_by: string | null;
   tags: string[];
+  plan_steps?: string[];
+  rollback_plan?: string[];
+  allowed_scopes?: Array<"once" | "session">;
+  resource_scope?: {
+    environment: string;
+    resources: Array<{ type: string; id: string; name: string }>;
+  } | null;
+  summary?: string;
+  approval_id?: string;
 }
 
 export interface ApprovalDecision {
   request_id: string;
-  decision: "approved" | "rejected";
+  decision: string;
   comment: string;
   decided_by: string;
   decided_at: string;

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import (
     auth, chat, incidents, change_impact, tools, connections, secrets, resources,
     approvals, notifications, audit, knowledge, policies, cases, agent_runs, upgrades, monitoring, remediation, executions, topology, evidence,
+    intent, interactions, runs,
 )
 
 app = FastAPI(title="OpsPilot API BFF", version="0.2.0")
@@ -37,6 +38,9 @@ app.include_router(connections.router,   prefix="/api/v1")
 app.include_router(secrets.router,      prefix="/api/v1")
 app.include_router(resources.router,    prefix="/api/v1")
 app.include_router(evidence.router,     prefix="/api/v1")
+app.include_router(intent.router,       prefix="/api/v1")
+app.include_router(interactions.router, prefix="/api/v1")
+app.include_router(runs.router,         prefix="/api/v1")
 
 # P1 routes
 app.include_router(approvals.router,     prefix="/api/v1")

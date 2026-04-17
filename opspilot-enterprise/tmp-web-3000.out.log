@@ -107,3 +107,19 @@
  GET /chat 200 in 270ms (next.js: 179ms, application-code: 90ms)
  GET /incidents 200 in 39ms (next.js: 5ms, application-code: 34ms)
  GET /chat 200 in 26ms (next.js: 4ms, application-code: 22ms)
+✓ Compiled in 341ms
+✓ Compiled in 214ms
+✓ Compiled in 284ms
+ GET /chat 500 in 69ms (next.js: 52ms, application-code: 17ms)
+ GET /chat 500 in 22ms (next.js: 8ms, application-code: 13ms)
+ GET /chat 500 in 22ms (next.js: 11ms, application-code: 11ms)
+ GET /chat 500 in 16ms (next.js: 8ms, application-code: 8ms)
+✓ Compiled in 80ms
+ GET /chat 500 in 17ms (next.js: 9ms, application-code: 8ms)
+ GET /chat 200 in 364ms (next.js: 171ms, application-code: 193ms)
+✓ Compiled in 60ms
+✓ Compiled in 52ms
+✓ Compiled in 80ms
+✓ Compiled in 55ms
+[?25h
+ ELIFECYCLE  Command failed with exit code 4294967295.

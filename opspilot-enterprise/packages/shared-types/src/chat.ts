@@ -1,4 +1,4 @@
-export interface ChatSession {
+﻿export interface ChatSession {
   id: string;
   title: string;
   created_at: string;
@@ -15,7 +15,7 @@ export interface ToolTrace {
   input_summary: string;
   output_summary: string;
   duration_ms: number;
-  status: "success" | "error" | "denied";
+  status: "success" | "error" | "denied" | "warning";
   timestamp: string;
 }
 
@@ -48,6 +48,18 @@ export interface ChatMessage {
   role: MessageRole;
   content: string;
   timestamp: string;
+  kind?: "text" | "intent_recovery" | "clarify" | "approval" | "resume";
+  workflow_update?: {
+    trigger: "clarify" | "approval" | "system";
+    next_action: string;
+    stages: Array<{
+      key: string;
+      label: string;
+      status: "done" | "active" | "pending";
+      detail?: string;
+    }>;
+    updated_at: string;
+  };
   tool_traces?: ToolTrace[];
   evidence_refs?: string[];
   root_cause?: {
@@ -128,4 +140,9 @@ export interface ChatMessage {
     finished_at?: string;
     summary: string;
   }>;
+  intent_recovery?: import("./intent").IntentRecoveryRun;
+  clarify_card?: import("./interaction").ClarifyRecord;
+  approval_card?: import("./interaction").ApprovalRecord;
+  resume_card?: import("./interaction").ResumeCardData;
+  audit_timeline?: import("./interaction").AuditTimelineData;
 }

@@ -595,6 +595,7 @@ class CreateSessionBody(BaseModel):
 
 class SendMessageBody(BaseModel):
     message: str
+    mode: str | None = None
 
 
 def _find_message(session_id: str, message_id: str) -> dict[str, Any] | None:
@@ -642,11 +643,12 @@ def _append_analysis_step_events(message: dict[str, Any], steps: list[dict[str, 
         )
 
 
-async def _run_orchestrator(session_id: str, message: str, history: list[dict]) -> dict | None:
+async def _run_orchestrator(session_id: str, message: str, history: list[dict], mode: str | None = None) -> dict | None:
     async with httpx.AsyncClient(timeout=600) as client:
         try:
+            endpoint = "/api/v1/orchestrate/chat-v2" if mode == "orchestrator_v2" else "/api/v1/orchestrate/chat"
             resp = await client.post(
-                f"{ORCHESTRATOR_URL}/api/v1/orchestrate/chat",
+                f"{ORCHESTRATOR_URL}{endpoint}",
                 json={"session_id": session_id, "message": message, "history": history},
             )
             payload = resp.json()
@@ -1297,7 +1299,7 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
     }
 
 
-async def _process_message(session_id: str, assistant_id: str, user_message: str) -> None:
+async def _process_message(session_id: str, assistant_id: str, user_message: str, mode: str | None = None) -> None:
     try:
         async with _state_lock:
             target = _find_message(session_id, assistant_id)
@@ -1310,7 +1312,7 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
                 if m.get("role") in ("user", "assistant") and m.get("id") != assistant_id
             ]
 
-        data = await _run_orchestrator(session_id, user_message, history)
+        data = await _run_orchestrator(session_id, user_message, history, mode)
         if not data:
             data = await _build_fallback_data(session_id, user_message)
 
@@ -1342,6 +1344,12 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
                 "调用匹配的 Agent 与工具完成处理。",
                 "已返回最终结果。",
             )
+            target["kind"] = data.get("kind", "text")
+            target["intent_recovery"] = data.get("intent_recovery")
+            target["clarify_card"] = data.get("clarify_card")
+            target["approval_card"] = data.get("approval_card")
+            target["resume_card"] = data.get("resume_card")
+            target["audit_timeline"] = data.get("audit_timeline")
             _append_analysis_step_events(target, data.get("analysis_steps", []))
             target["status"] = "completed"
             _append_progress_event(target, "tool_done", "工具调用完成", "success")
@@ -1474,6 +1482,7 @@ async def send_message(session_id: str, body: SendMessageBody):
             "status": "in_progress",
             "progress_events": [],
             "analysis_steps": [],
+            "kind": "text",
             "reasoning_summary": _reasoning_summary(
                 f"已接收用户请求：{body.message[:80]}",
                 execution_plan,
@@ -1490,7 +1499,7 @@ async def send_message(session_id: str, body: SendMessageBody):
         if _sessions[session_id]["title"] in {"新会话", body.message[:30]}:
             _sessions[session_id]["title"] = body.message[:30]
 
-    task = asyncio.create_task(_process_message(session_id, assistant_id, body.message))
+    task = asyncio.create_task(_process_message(session_id, assistant_id, body.message, body.mode))
     _message_tasks[assistant_id] = task
 
     return make_success(assistant_msg)
