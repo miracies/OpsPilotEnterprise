@@ -39,8 +39,8 @@ export interface ToolMeta {
   lifecycle_status?: ToolLifecycleStatus;
   connection_ref?: string;
   supported_connection_types?: string[];
-  input_schema?: string;
-  output_schema?: string;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown>;
   registered_at?: string;
   updated_at?: string;
 }

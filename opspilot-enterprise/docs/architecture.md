@@ -49,21 +49,25 @@
 
 Orchestrator 内部采用 SubAgent 模式：
 
-| Agent | 职责 |
-|-------|------|
-| IntentAgent | 意图识别与请求结构化 |
-| EvidenceCollectionAgent | 证据采集 |
-| KBRetrievalAgent | 知识库检索 |
-| RCAAgent | 根因分析 |
-| NotificationAgent | 通知值班人 |
-| CaseArchiveAgent | 案例归档 |
+
+| Agent                   | 职责         |
+| ----------------------- | ---------- |
+| IntentAgent             | 意图识别与请求结构化 |
+| EvidenceCollectionAgent | 证据采集       |
+| KBRetrievalAgent        | 知识库检索      |
+| RCAAgent                | 根因分析       |
+| NotificationAgent       | 通知值班人      |
+| CaseArchiveAgent        | 案例归档       |
+
 
 首期为结构桩，预留真实 LangGraph 接入位。
 
 ## 扩展模型
 
 新领域能力通过 Gateway 模式接入：
+
 1. 实现领域 Gateway（如 Kubernetes Skill Gateway）
 2. 通过 Tool Registry 注册工具元数据
 3. Tool Gateway 自动路由
 4. Agent 按工具元数据发现新能力
+

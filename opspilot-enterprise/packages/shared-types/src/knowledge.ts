@@ -13,9 +13,19 @@ export interface KnowledgeArticle {
   version: string;
   hit_count: number;
   confidence_score: number;
+  relevance_score?: number;
+  why_selected?: string;
+  citations?: KnowledgeCitation[];
   created_at: string;
   updated_at: string;
   related_incident_ids: string[];
+}
+
+export interface KnowledgeCitation {
+  article_id: string;
+  title: string;
+  relevance_score: number;
+  why_selected: string;
 }
 
 export interface KnowledgeImportJob {

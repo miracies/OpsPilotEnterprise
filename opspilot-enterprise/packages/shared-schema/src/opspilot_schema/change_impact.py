@@ -27,6 +27,16 @@ class DependencyNode(BaseModel):
     children: list[DependencyNode] = []
 
 
+class ChangeHypothesis(BaseModel):
+    id: str
+    summary: str
+    confidence: float
+    support_evidence_refs: list[str] = []
+    counter_evidence_refs: list[str] = []
+    missing_evidence: list[str] = []
+    status: Literal["candidate", "confirmed", "probable", "refuted", "inconclusive"] = "candidate"
+
+
 class ChangeImpactResult(BaseModel):
     analysis_id: str
     target: dict
@@ -38,3 +48,7 @@ class ChangeImpactResult(BaseModel):
     rollback_plan: list[str] = []
     approval_suggestion: Literal["required", "recommended", "not_required"]
     dependency_graph: list[DependencyNode] = []
+    evidence_sufficiency: dict | None = None
+    conclusion_status: Literal["confirmed", "probable", "insufficient_evidence", "contradicted"] | None = None
+    counter_evidence_result: dict | None = None
+    hypotheses: list[ChangeHypothesis] = []

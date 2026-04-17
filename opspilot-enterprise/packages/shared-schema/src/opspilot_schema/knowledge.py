@@ -3,6 +3,13 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class KnowledgeCitation(BaseModel):
+    article_id: str
+    title: str
+    relevance_score: float
+    why_selected: str
+
+
 class KnowledgeArticle(BaseModel):
     id: str
     title: str
@@ -15,6 +22,9 @@ class KnowledgeArticle(BaseModel):
     version: str
     hit_count: int = 0
     confidence_score: float
+    relevance_score: float | None = None
+    why_selected: str | None = None
+    citations: list[KnowledgeCitation] = []
     created_at: str
     updated_at: str
     related_incident_ids: list[str] = []

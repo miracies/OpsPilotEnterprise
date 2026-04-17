@@ -35,6 +35,29 @@ export interface ChangeImpactResult {
   rollback_plan: string[];
   approval_suggestion: "required" | "recommended" | "not_required";
   dependency_graph: DependencyNode[];
+  evidence_sufficiency?: {
+    required_evidence_types: string[];
+    present_evidence_types: string[];
+    missing_critical_evidence: string[];
+    sufficiency_score: number;
+    freshness_score: number;
+  };
+  conclusion_status?: "confirmed" | "probable" | "insufficient_evidence" | "contradicted";
+  counter_evidence_result?: {
+    status: "refuted" | "not_refuted" | "inconclusive";
+    checked_hypothesis_id?: string | null;
+    summary: string;
+    evidence_refs: string[];
+  };
+  hypotheses?: Array<{
+    id: string;
+    summary: string;
+    confidence: number;
+    support_evidence_refs: string[];
+    counter_evidence_refs: string[];
+    missing_evidence: string[];
+    status: "candidate" | "confirmed" | "probable" | "refuted" | "inconclusive";
+  }>;
 }
 
 export interface DependencyNode {

@@ -19,7 +19,14 @@ export interface Incident {
   last_updated_at: string;
   owner: string | null;
   ai_analysis_triggered: boolean;
+  root_cause?: RootCause;
   root_cause_candidates: RootCauseCandidate[];
+  hypotheses?: Hypothesis[];
+  winning_hypothesis?: Hypothesis;
+  counter_evidence_result?: CounterEvidenceResult;
+  conclusion_status?: "confirmed" | "probable" | "insufficient_evidence" | "contradicted";
+  evidence_sufficiency?: EvidenceSufficiency;
+  contradictions?: Array<{ type: string; summary: string; evidence_refs?: string[]; severity?: string }>;
   recommended_actions: string[];
   evidence_refs: string[];
   analysis?: IncidentAnalysis;
@@ -40,16 +47,55 @@ export interface RootCauseCandidate {
   category: string;
 }
 
+export interface RootCause {
+  summary: string;
+  confidence: number;
+  evidence_refs: string[];
+}
+
+export interface EvidenceSufficiency {
+  required_evidence_types: string[];
+  present_evidence_types: string[];
+  missing_critical_evidence: string[];
+  sufficiency_score: number;
+  freshness_score: number;
+}
+
+export interface Hypothesis {
+  id: string;
+  summary: string;
+  category: string;
+  confidence: number;
+  support_evidence_refs: string[];
+  counter_evidence_refs: string[];
+  missing_evidence: string[];
+  status: "candidate" | "confirmed" | "probable" | "refuted" | "inconclusive";
+  why: string;
+}
+
+export interface CounterEvidenceResult {
+  status: "refuted" | "not_refuted" | "inconclusive";
+  checked_hypothesis_id?: string | null;
+  summary: string;
+  evidence_refs: string[];
+}
+
 export type AnalysisStatus = "idle" | "running" | "completed" | "failed";
 
 export interface IncidentAnalysisStep {
   round: number;
   stage: string;
+  goal?: string;
   tool_name?: string;
+  selected_tools?: string[];
   input_summary?: string;
   output_summary?: string;
+  evidence_found?: string[];
+  evidence_missing?: string[];
+  contradictions?: string[];
   finding: string;
   decision: string;
+  why?: string;
   timestamp: string;
   status: "success" | "failed" | "running";
 }

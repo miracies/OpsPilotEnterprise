@@ -16,11 +16,11 @@ import {
 } from "lucide-react";
 import { type Incident, type IncidentAnalysisStep } from "@opspilot/shared-types";
 
-import { PageHeader } from "@/components/ui/page-header";
-import { Button } from "@/components/ui/button";
-import { SeverityBadge, StatusBadge } from "@/components/ui/badge";
 import { apiFetch } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
+import { SeverityBadge, StatusBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
 
 type IncidentsEnvelope = { data?: { incidents?: Incident[] } };
 type IncidentEnvelope = { data?: Incident };
@@ -30,24 +30,32 @@ type PreferenceEnvelope = { data?: { user_id?: string; auto_remediation_mode?: P
 const DEFAULT_USER_ID = "ops-user";
 
 const stageLabelMap: Record<string, string> = {
-  plan: "意图识别中",
-  tool_invoking: "调用资源中",
-  assess: "证据评估中",
-  decide_next: "决策下一步",
+  target_resolution: "目标识别",
+  evidence_planning: "证据规划",
+  evidence_collection: "证据采集",
+  hypothesis_generation: "假设生成",
+  hypothesis_scoring: "假设评分",
+  counter_evidence_check: "反证检查",
+  conclusion_gate: "结论门禁",
+  recommendation_planning: "建议规划",
+  tool_invoking: "工具调用",
+  decide_next: "下一步决策",
+  plan: "意图识别",
+  assess: "证据评估",
 };
 
 function stageMeta(step: IncidentAnalysisStep) {
   const label = stageLabelMap[step.stage] ?? step.stage;
   if (step.status === "failed") {
-    return { label, icon: XCircle, cls: "text-red-600 bg-red-50 border-red-200" };
+    return { label, icon: XCircle, cls: "border-red-200 bg-red-50 text-red-600" };
   }
-  if (step.stage === "tool_invoking") {
-    return { label, icon: Wrench, cls: "text-blue-600 bg-blue-50 border-blue-200" };
+  if (step.stage === "tool_invoking" || step.stage === "evidence_collection") {
+    return { label, icon: Wrench, cls: "border-blue-200 bg-blue-50 text-blue-600" };
   }
-  if (step.stage === "decide_next") {
-    return { label, icon: Bot, cls: "text-violet-600 bg-violet-50 border-violet-200" };
+  if (step.stage === "decide_next" || step.stage === "conclusion_gate") {
+    return { label, icon: Bot, cls: "border-violet-200 bg-violet-50 text-violet-600" };
   }
-  return { label, icon: CheckCircle2, cls: "text-emerald-600 bg-emerald-50 border-emerald-200" };
+  return { label, icon: CheckCircle2, cls: "border-emerald-200 bg-emerald-50 text-emerald-600" };
 }
 
 export default function IncidentsPage() {
@@ -67,8 +75,8 @@ export default function IncidentsPage() {
       setIncidents(items);
       setSelectedId((prev) => prev ?? items[0]?.id ?? null);
       setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载故障事件失败");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载故障事件失败");
     } finally {
       setLoading(false);
     }
@@ -82,22 +90,21 @@ export default function IncidentsPage() {
     try {
       const res = await apiFetch<IncidentEnvelope>(`/api/v1/incidents/${selectedId}`);
       setSelected(res.data ?? null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载事件详情失败");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载事件详情失败");
     }
   }, [selectedId]);
 
   const loadPreferences = useCallback(async () => {
     try {
       const res = await apiFetch<PreferenceEnvelope>(
-        `/api/v1/incidents/analysis-preferences?user_id=${encodeURIComponent(DEFAULT_USER_ID)}`
+        `/api/v1/incidents/analysis-preferences?user_id=${encodeURIComponent(DEFAULT_USER_ID)}`,
       );
-      const mode = res.data?.auto_remediation_mode;
-      if (mode) {
-        setAutoMode(mode);
+      if (res.data?.auto_remediation_mode) {
+        setAutoMode(res.data.auto_remediation_mode);
       }
     } catch {
-      // ignore preference load error, keep default
+      // keep default mode
     }
   }, []);
 
@@ -130,8 +137,8 @@ export default function IncidentsPage() {
       });
       await loadSelected();
       await loadIncidents();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "触发复分析失败");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "触发重新分析失败");
     } finally {
       setAnalyzing(false);
     }
@@ -145,15 +152,15 @@ export default function IncidentsPage() {
         method: "PUT",
         body: JSON.stringify({ user_id: DEFAULT_USER_ID, auto_remediation_mode: mode }),
       });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "保存自动处置偏好失败");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存自动处置偏好失败");
     } finally {
       setModeSaving(false);
     }
   };
 
   const analysisStatus = analysis?.status ?? "idle";
-  const statusText =
+  const analysisStatusText =
     analysisStatus === "running"
       ? "分析中"
       : analysisStatus === "completed"
@@ -166,14 +173,12 @@ export default function IncidentsPage() {
     <div className="space-y-4">
       <PageHeader
         title="故障事件中心"
-        description="实时查看 vCenter 与 K8s 事件，并跟踪自动分析过程与处置建议。"
+        description="实时查看 vCenter 与 K8s 故障事件，跟踪自动分析过程和处置建议。"
         actions={
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={loadIncidents}>
-              <RefreshCw className="mr-1 h-4 w-4" />
-              刷新
-            </Button>
-          </div>
+          <Button variant="secondary" size="sm" onClick={loadIncidents}>
+            <RefreshCw className="mr-1 h-4 w-4" />
+            刷新
+          </Button>
         }
       />
 
@@ -248,6 +253,7 @@ export default function IncidentsPage() {
 
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             {!selected && <div className="text-sm text-slate-500">暂无选中事件</div>}
+
             {selected && (
               <div className="space-y-4">
                 <div>
@@ -271,7 +277,7 @@ export default function IncidentsPage() {
                   <div className="mb-2 flex items-center justify-between">
                     <div className="text-sm font-semibold text-slate-800">分析过程</div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-500">{statusText}</span>
+                      <span className="text-xs text-slate-500">{analysisStatusText}</span>
                       <Button size="sm" onClick={triggerReanalyze} disabled={analyzing}>
                         {analyzing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <PlayCircle className="mr-1 h-4 w-4" />}
                         重新分析
@@ -322,15 +328,63 @@ export default function IncidentsPage() {
                   </div>
                 </div>
 
+                {(selected.conclusion_status ||
+                  selected.evidence_sufficiency ||
+                  (selected.hypotheses && selected.hypotheses.length > 0)) && (
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                    {selected.conclusion_status && (
+                      <div>
+                        <span className="font-medium text-slate-500">结论状态：</span>
+                        {selected.conclusion_status}
+                      </div>
+                    )}
+                    {selected.evidence_sufficiency && (
+                      <div className="space-y-1">
+                        <div>
+                          <span className="font-medium text-slate-500">证据充分性：</span>
+                          {(selected.evidence_sufficiency.sufficiency_score ?? 0).toFixed(2)} / 新鲜度{" "}
+                          {(selected.evidence_sufficiency.freshness_score ?? 0).toFixed(2)}
+                        </div>
+                        {selected.evidence_sufficiency.missing_critical_evidence?.length > 0 && (
+                          <div className="text-amber-700">
+                            缺失关键证据：{selected.evidence_sufficiency.missing_critical_evidence.join("、")}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {selected.counter_evidence_result && (
+                      <div>
+                        <span className="font-medium text-slate-500">反证结果：</span>
+                        {selected.counter_evidence_result.status}，{selected.counter_evidence_result.summary}
+                      </div>
+                    )}
+                    {selected.hypotheses && selected.hypotheses.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="font-medium text-slate-500">候选根因对比</div>
+                        {selected.hypotheses.slice(0, 3).map((item) => (
+                          <div key={item.id} className="rounded border border-slate-200 bg-white px-2 py-1">
+                            <div className="font-medium text-slate-800">
+                              {item.summary} ({(item.confidence ?? 0).toFixed(2)})
+                            </div>
+                            {item.missing_evidence?.length > 0 && (
+                              <div className="text-amber-700">缺口：{item.missing_evidence.join("、")}</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">操作建议</div>
                   {(analysis?.recommended_actions ?? selected.recommended_actions).length === 0 && (
                     <div className="text-sm text-slate-500">暂无建议</div>
                   )}
-                  {(analysis?.recommended_actions ?? selected.recommended_actions).map((x, i) => (
-                    <div key={`${x}-${i}`} className="mb-1 flex items-start gap-2 text-sm text-slate-700">
+                  {(analysis?.recommended_actions ?? selected.recommended_actions).map((item, idx) => (
+                    <div key={`${item}-${idx}`} className="mb-1 flex items-start gap-2 text-sm text-slate-700">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 text-amber-500" />
-                      <span>{x}</span>
+                      <span>{item}</span>
                     </div>
                   ))}
                 </div>
@@ -358,18 +412,35 @@ function StepCard({ step, expanded = false }: { step: IncidentAnalysisStep; expa
       <div className="mb-1 flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs font-semibold">
           <Icon className="h-3.5 w-3.5" />
-          <span>第 {step.round} 轮 · {meta.label}</span>
+          <span>
+            第 {step.round} 轮 · {meta.label}
+          </span>
         </div>
         <span className="text-[11px] opacity-75">{formatDate(step.timestamp)}</span>
       </div>
       {(expanded || step.status === "failed") && (
         <div className="space-y-1 text-xs">
+          {step.goal && <div>目标：{step.goal}</div>}
           {step.tool_name && <div>工具：{step.tool_name}</div>}
+          {step.selected_tools && step.selected_tools.length > 0 && (
+            <div>本轮工具：{step.selected_tools.join("、")}</div>
+          )}
           <div>发现：{step.finding}</div>
           <div>决策：{step.decision}</div>
+          {step.evidence_found && step.evidence_found.length > 0 && (
+            <div>已获证据：{step.evidence_found.join("、")}</div>
+          )}
+          {step.evidence_missing && step.evidence_missing.length > 0 && (
+            <div className="text-amber-700">缺失证据：{step.evidence_missing.join("、")}</div>
+          )}
+          {step.contradictions && step.contradictions.length > 0 && (
+            <div className="text-rose-700">矛盾证据：{step.contradictions.join("、")}</div>
+          )}
           {step.output_summary && <div>结果摘要：{step.output_summary}</div>}
+          {step.why && <div className="text-slate-500">原因：{step.why}</div>}
         </div>
       )}
     </div>
   );
 }
+

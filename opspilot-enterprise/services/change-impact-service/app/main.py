@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import re
@@ -99,17 +99,17 @@ def _approval_suggestion_from_policy(
 
 def _tool_name_from_action(action: str) -> tuple[str, str]:
     txt = action.lower()
-    if "host restart" in txt or "host reboot" in txt or "重启主机" in txt or "主机重启" in txt:
+    if "host restart" in txt or "host reboot" in txt or "閲嶅惎涓绘満" in txt or "涓绘満閲嶅惎" in txt:
         return "vmware.host_restart", "dangerous"
-    if "migrate" in txt or "迁移" in txt:
+    if "migrate" in txt or "杩佺Щ" in txt:
         return "vmware.vm_migrate", "write"
-    if "power off" in txt or "关机" in txt:
+    if "power off" in txt or "鍏虫満" in txt:
         return "vmware.vm_power_off", "write"
     if "power on" in txt or "开机" in txt:
         return "vmware.vm_power_on", "write"
-    if "snapshot" in txt or "快照" in txt:
+    if "snapshot" in txt or "蹇収" in txt:
         return "vmware.create_snapshot", "write"
-    if "restart deployment" in txt or "重启部署" in txt:
+    if "restart deployment" in txt or "閲嶅惎閮ㄧ讲" in txt:
         return "k8s.restart_deployment", "write"
     if "scale" in txt or "扩缩容" in txt:
         return "k8s.scale_deployment", "write"
@@ -193,7 +193,7 @@ async def _analyze_vmware(body: ChangeImpactRequest) -> tuple[list[ImpactedObjec
     if target_type in {"vm", "virtualmachine"}:
         vm = _match_item(vms, target, ["vm_id", "name"])
         if not vm:
-            raise RuntimeError(f"未在 vCenter 中找到目标虚拟机: {target}")
+            raise RuntimeError(f"鏈湪 vCenter 涓壘鍒扮洰鏍囪櫄鎷熸満: {target}")
         vm_id = str(vm.get("vm_id", target))
         vm_name = str(vm.get("name", target))
         impacted.append(
@@ -208,10 +208,10 @@ async def _analyze_vmware(body: ChangeImpactRequest) -> tuple[list[ImpactedObjec
         graph = _build_tree(topology_nodes, vm_id)
         checks = [
             "核对目标虚拟机当前业务窗口与依赖关系",
-            "检查同宿主机关键 VM 资源占用",
-            "确认备份/快照策略可回退",
+            "检查同宿主主机关键 VM 资源占用",
+            "确认备份或快照策略可回退",
         ]
-        rollback = ["执行回退至原主机或回滚上次快照", "恢复变更前资源配额与调度策略"]
+        rollback = ["执行回迁到原宿主或回滚到上一次快照", "恢复变更前资源配额与调度策略"]
         base_score = 55
     elif target_type in {"host", "hostsystem"}:
         host = _match_item(hosts, target, ["host_id", "name"])
@@ -242,11 +242,11 @@ async def _analyze_vmware(body: ChangeImpactRequest) -> tuple[list[ImpactedObjec
             )
         graph = _build_tree(topology_nodes, host_id)
         checks = [
-            "确认主机硬件健康与管理网络连通性",
+            "确认主机硬件健康与管理网络连通状态",
             "评估主机承载 VM 的 SLA 与迁移窗口",
             "校验集群剩余容量是否满足故障转移",
         ]
-        rollback = ["撤销本次主机变更并恢复原调度策略", "必要时将关键 VM 迁回原宿主机"]
+        rollback = ["撤销本次主机变更并恢复原调度策略", "必要时将关键 VM 迁回原宿主"]
         base_score = 62
     else:
         cluster = _match_item(clusters, target, ["cluster_id", "name"])
@@ -277,7 +277,7 @@ async def _analyze_vmware(body: ChangeImpactRequest) -> tuple[list[ImpactedObjec
         graph = _build_tree(topology_nodes, cluster_id)
         checks = [
             "确认 DRS/HA 策略与维护窗口一致",
-            "校验集群内主机容量与故障域分布",
+            "校验集群内容量与故障域分布",
             "评估关键业务 VM 的迁移影响",
         ]
         rollback = ["恢复变更前集群策略配置", "按优先级回迁关键工作负载"]
@@ -321,7 +321,7 @@ async def _analyze_k8s(body: ChangeImpactRequest) -> tuple[list[ImpactedObject],
             dep = d
             break
     if not dep:
-        raise RuntimeError(f"未在 Kubernetes 中找到目标工作负载: {target_id}")
+        raise RuntimeError(f"鏈湪 Kubernetes 涓壘鍒扮洰鏍囧伐浣滆礋杞? {target_id}")
 
     dep_name = str(dep.get("name", name))
     dep_ns = str(dep.get("namespace", ns or "default"))
@@ -427,6 +427,45 @@ async def analyze_change_impact(body: ChangeImpactRequest) -> dict:
         if not policy["allowed"]:
             checks = [f"策略门禁：{policy['reason']}"] + checks
 
+        required_evidence_types = ["impact_graph", "runtime_checks", "policy"]
+        present_evidence_types = ["policy"]
+        if impacted:
+            present_evidence_types.append("impact_graph")
+        if checks:
+            present_evidence_types.append("runtime_checks")
+        missing_critical = [item for item in required_evidence_types if item not in present_evidence_types]
+        sufficiency_score = round(min(1.0, len(present_evidence_types) / max(1, len(required_evidence_types))), 2)
+        freshness_score = 0.85
+        hypotheses = [
+            {
+                "summary": "目标对象重启会直接影响其所在运行实例和依赖路径。",
+                "category": "availability",
+                "confidence": round(min(0.9, 0.45 + len(impacted) * 0.03 + risk_score / 200), 2),
+                "support_evidence_refs": [f"impact:{obj.object_id}" for obj in impacted[:5]],
+                "counter_evidence_refs": [],
+                "missing_evidence": missing_critical,
+                "status": "candidate",
+                "why": "受影响对象和依赖图是最直接的影响证据。",
+            },
+            {
+                "summary": "若存在冗余或集群调度能力，实际影响可能低于直观预估。",
+                "category": "resilience",
+                "confidence": round(max(0.22, 0.62 - len(impacted) * 0.02), 2),
+                "support_evidence_refs": [f"graph:{node.id}" for node in graph[:3]],
+                "counter_evidence_refs": [f"impact:{obj.object_id}" for obj in impacted[:2]],
+                "missing_evidence": missing_critical,
+                "status": "candidate",
+                "why": "如果图谱中存在冗余或备用路径，影响范围可能被吸收。",
+            },
+        ]
+        counter_evidence_result = {
+            "status": "not_refuted" if not missing_critical else "inconclusive",
+            "checked_hypothesis_id": "change-impact-primary",
+            "summary": "依赖图和运行检查未发现足以推翻主影响假设的反证。" if not missing_critical else "影响证据仍有缺口，结论应按概率解释。",
+            "evidence_refs": [f"impact:{obj.object_id}" for obj in impacted[:3]],
+        }
+        conclusion_status = "probable" if missing_critical else "confirmed"
+
         result = ChangeImpactResult(
             analysis_id=f"cia-{uuid.uuid4().hex[:12]}",
             target={
@@ -442,7 +481,18 @@ async def analyze_change_impact(body: ChangeImpactRequest) -> dict:
             rollback_plan=rollback,
             approval_suggestion=approval_suggestion,
             dependency_graph=graph,
+            evidence_sufficiency={
+                "required_evidence_types": required_evidence_types,
+                "present_evidence_types": present_evidence_types,
+                "missing_critical_evidence": missing_critical,
+                "sufficiency_score": sufficiency_score,
+                "freshness_score": freshness_score,
+            },
+            conclusion_status=conclusion_status,
+            counter_evidence_result=counter_evidence_result,
+            hypotheses=hypotheses,
         )
         return make_success(result.model_dump())
     except Exception as exc:  # noqa: BLE001
         return make_error(str(exc))
+

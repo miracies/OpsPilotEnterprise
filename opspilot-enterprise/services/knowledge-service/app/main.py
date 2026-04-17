@@ -1,6 +1,9 @@
 """OpsPilot Knowledge Service - knowledge articles, KB search, case archive."""
 from __future__ import annotations
+
+import re
 from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from opspilot_schema.envelope import make_success
@@ -16,9 +19,48 @@ app.add_middleware(
 )
 
 _ARTICLES = [
-    {"id": "KB-001", "title": "Java Full GC 风暴导致 vCPU 高占用的诊断方法", "source": "runbook", "status": "published", "tags": ["java", "jvm", "cpu"], "author": "ops-team", "version": "1.2.0", "hit_count": 23, "confidence_score": 0.92, "created_at": "2026-01-10T09:00:00Z", "updated_at": "2026-03-20T14:30:00Z"},
-    {"id": "KB-002", "title": "VMware HA 隔离事件处理流程", "source": "runbook", "status": "published", "tags": ["vmware", "ha", "network"], "author": "ops-team", "version": "2.0.1", "hit_count": 15, "confidence_score": 0.88, "created_at": "2025-11-05T10:00:00Z", "updated_at": "2026-02-14T11:00:00Z"},
-    {"id": "KB-003", "title": "NFS 数据存储快照容量管理最佳实践", "source": "confluence", "status": "published", "tags": ["vmware", "nfs", "snapshot"], "author": "storage-team", "version": "1.0.3", "hit_count": 31, "confidence_score": 0.95, "created_at": "2025-08-20T08:00:00Z", "updated_at": "2026-01-08T16:00:00Z"},
+    {
+        "id": "KB-001",
+        "title": "Java Full GC 风暴导致 vCPU 高占用的诊断方法",
+        "content_summary": "针对虚拟化环境下 JVM Full GC 风暴引发 CPU 飙升的排查流程与缓解动作。",
+        "source": "runbook",
+        "status": "published",
+        "tags": ["java", "jvm", "cpu", "vmware"],
+        "author": "ops-team",
+        "version": "1.2.0",
+        "hit_count": 23,
+        "confidence_score": 0.92,
+        "created_at": "2026-01-10T09:00:00Z",
+        "updated_at": "2026-03-20T14:30:00Z",
+    },
+    {
+        "id": "KB-002",
+        "title": "VMware HA 隔离事件处理流程",
+        "content_summary": "处理 ESXi 主机网络隔离与 HA 触发的分级处置手册。",
+        "source": "runbook",
+        "status": "published",
+        "tags": ["vmware", "ha", "network", "host"],
+        "author": "ops-team",
+        "version": "2.0.1",
+        "hit_count": 15,
+        "confidence_score": 0.88,
+        "created_at": "2025-11-05T10:00:00Z",
+        "updated_at": "2026-02-14T11:00:00Z",
+    },
+    {
+        "id": "KB-003",
+        "title": "NFS 数据存储快照容量管理最佳实践",
+        "content_summary": "快照堆积、容量告警、存储性能抖动场景下的治理建议。",
+        "source": "confluence",
+        "status": "published",
+        "tags": ["vmware", "nfs", "snapshot", "datastore"],
+        "author": "storage-team",
+        "version": "1.0.3",
+        "hit_count": 31,
+        "confidence_score": 0.95,
+        "created_at": "2025-08-20T08:00:00Z",
+        "updated_at": "2026-01-08T16:00:00Z",
+    },
 ]
 
 _CASES = [
@@ -32,15 +74,47 @@ async def health():
     return make_success({"status": "ok", "service": "knowledge-service"})
 
 
+def _score_article(item: dict, q: str | None, domain: str | None, environment: str | None) -> tuple[float, str]:
+    score = float(item.get("confidence_score") or 0.5)
+    reasons: list[str] = []
+    blob = f"{item.get('title', '')} {item.get('content_summary', '')} {' '.join(item.get('tags', []))}".lower()
+    if q:
+        terms = [x for x in re.split(r"[\s,，;；]+", q.lower()) if x]
+        matched = sum(1 for t in terms if t in blob)
+        if matched:
+            score += 0.07 * matched
+            reasons.append(f"命中查询词 {matched} 个")
+    if domain and domain.lower() in blob:
+        score += 0.08
+        reasons.append(f"匹配域 {domain}")
+    if environment and environment.lower() in {"prod", "production", "生产"} and ("runbook" in str(item.get("source"))):
+        score += 0.03
+        reasons.append("生产场景优先 runbook")
+    return min(score, 0.99), "；".join(reasons) or "基础相关性"
+
+
 @app.get("/knowledge/articles")
-async def list_articles(status: Optional[str] = None, q: Optional[str] = None):
+async def list_articles(status: Optional[str] = None, q: Optional[str] = None, domain: Optional[str] = None, environment: Optional[str] = None):
     data = _ARTICLES
     if status:
         data = [a for a in data if a["status"] == status]
-    if q:
-        q_lower = q.lower()
-        data = [a for a in data if q_lower in a["title"].lower() or any(q_lower in t for t in a["tags"])]
-    return make_success({"items": data, "total": len(data)})
+    ranked: list[dict] = []
+    for item in data:
+        score, why = _score_article(item, q, domain, environment)
+        enriched = dict(item)
+        enriched["relevance_score"] = round(score, 3)
+        enriched["why_selected"] = why
+        enriched["citations"] = [
+            {
+                "article_id": item["id"],
+                "title": item["title"],
+                "relevance_score": round(score, 3),
+                "why_selected": why,
+            }
+        ]
+        ranked.append(enriched)
+    ranked.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    return make_success({"items": ranked, "total": len(ranked)})
 
 
 @app.get("/knowledge/articles/{article_id}")

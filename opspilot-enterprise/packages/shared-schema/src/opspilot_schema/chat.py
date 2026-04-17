@@ -54,7 +54,14 @@ class ChatMessage(BaseModel):
     timestamp: str
     tool_traces: list[ToolTrace] | None = None
     evidence_refs: list[str] | None = None
+    root_cause: dict | None = None
     root_cause_candidates: list[dict] | None = None
+    hypotheses: list[dict] | None = None
+    winning_hypothesis: dict | None = None
+    counter_evidence_result: dict | None = None
+    conclusion_status: Literal["confirmed", "probable", "insufficient_evidence", "contradicted"] | None = None
+    evidence_sufficiency: dict | None = None
+    contradictions: list[dict] | None = None
     recommended_actions: list[str] | None = None
     agent_name: str | None = None
     export_file: dict | None = None
@@ -63,3 +70,4 @@ class ChatMessage(BaseModel):
     status: Literal["in_progress", "completed", "failed"] | None = None
     progress_events: list[ProgressEvent] | None = None
     reasoning_summary: ReasoningSummary | None = None
+    analysis_steps: list[dict] | None = None

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from app.agents import run_multi_agent_rootcause
 from app.llm_client import DIAGNOSIS_SYSTEM_PROMPT, SYSTEM_PROMPT, chat_completion, check_llm_health
 from opspilot_schema.change_impact import ChangeImpactRequest
 from opspilot_schema.envelope import make_error, make_success
@@ -30,6 +31,9 @@ app = FastAPI(title="OpsPilot LangGraph Orchestrator")
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
 CHANGE_IMPACT_SERVICE_URL = os.environ.get("CHANGE_IMPACT_SERVICE_URL", "http://127.0.0.1:8040")
 RESOURCE_BFF_URL = os.environ.get("RESOURCE_BFF_URL", "http://127.0.0.1:8000")
+EVIDENCE_AGGREGATOR_URL = os.environ.get("EVIDENCE_AGGREGATOR_URL", "http://127.0.0.1:8050")
+TOPOLOGY_SERVICE_URL = os.environ.get("TOPOLOGY_SERVICE_URL", "http://127.0.0.1:8090")
+KNOWLEDGE_SERVICE_URL = os.environ.get("KNOWLEDGE_SERVICE_URL", "http://127.0.0.1:8072")
 VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
 VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
 VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
@@ -81,12 +85,25 @@ SUPPORTED_EXPORT_COLUMNS = {
 DEFAULT_VM_EXPORT_COLUMNS = ["vm_id", "name", "power_state"]
 
 DIAGNOSIS_KEYWORDS = re.compile(
-    r"\u5206\u6790|\u8bca\u65ad|\u6392\u67e5|\u544a\u8b66|\u6839\u56e0|\u5f02\u5e38|\u6545\u969c|\u6392\u969c|\u4e3a\u4ec0\u4e48|\u539f\u56e0|\u68c0\u67e5",
+    r"\u5206\u6790|\u8bca\u65ad|\u6392\u67e5|\u544a\u8b66|\u6839\u56e0|\u5f02\u5e38|\u6545\u969c|\u6392\u969c|\u4e3a\u4ec0\u4e48|\u539f\u56e0|\u68c0\u67e5|\u95ee\u9898|\u4ec0\u4e48\u95ee\u9898",
     re.I,
 )
 VMWARE_KEYWORDS = re.compile(r"vmware|vcenter|esxi|\u865a\u62df\u673a|\u4e3b\u673a|\u6570\u636e\u5b58\u50a8", re.I)
 K8S_KEYWORDS = re.compile(r"k8s|kubernetes|pod|deployment|node|namespace|\u5bb9\u5668|\u96c6\u7fa4", re.I)
 HOST_IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+DIAGNOSIS_STATUS_SIGNALS = re.compile(
+    r"overallstatus|connectionstate|yellow|red|gray|\u975e\u5065\u5eb7|\u4e0d\u5065\u5eb7|\u72b6\u6001\u5f02\u5e38|\u5065\u5eb7\u72b6\u6001",
+    re.I,
+)
+GENERIC_OPS_QA_KEYWORDS = re.compile(
+    r"是否会|会不会|会有|影响|中断|丢包|风险|原理|注意事项|最佳实践|怎么避免|如何避免",
+    re.I,
+)
+GENERIC_OPS_QA_CONTEXT = re.compile(
+    r"虚拟机|vm|vmotion|热迁移|迁移|主机|esxi|vcenter|vsphere|网络|k8s|kubernetes|pod|deployment|容器|存储|数据库|告警|故障|中断",
+    re.I,
+)
+GENERIC_QA_RISK_KEYWORDS = re.compile(r"生产|中断|丢包|故障|风险|宕机|抖动|失败|回退", re.I)
 
 
 class DiagnoseRequest(BaseModel):
@@ -199,13 +216,33 @@ def _extract_host_target_from_message(message: str) -> str | None:
         r"(?:主机|host)\s*[:：]?\s*([A-Za-z0-9._:-]+)",
         r"([A-Za-z0-9._:-]+)\s*(?:主机|host)",
     ]
-    stopwords = {"vcenter", "vsphere", "prod", "生产", "生产环境", "health", "status", "健康状况", "分析"}
+    stopwords = {
+        "vcenter",
+        "vsphere",
+        "prod",
+        "生产",
+        "生产环境",
+        "health",
+        "status",
+        "host",
+        "esxi",
+        "健康状况",
+        "分析",
+        "overallstatus",
+        "connectionstate",
+        "powerstate",
+        "yellow",
+        "red",
+        "green",
+        "gray",
+    }
     for pattern in patterns:
         m = re.search(pattern, message, re.I)
         if not m:
             continue
         target = (m.group(1) or "").strip()
-        if target and target.lower() not in stopwords:
+        target_l = target.lower()
+        if target and target_l not in stopwords:
             return target
     return None
 
@@ -265,6 +302,168 @@ async def _write_audit_log(payload: dict[str, Any]) -> None:
             await client.post(url, json=payload)
     except Exception:
         return
+
+
+def _is_generic_ops_qa_intent(message: str) -> bool:
+    if _is_diagnostic_query_intent(message):
+        return False
+    lowered = message.lower()
+    has_context = bool(GENERIC_OPS_QA_CONTEXT.search(message))
+    has_keyword = bool(GENERIC_OPS_QA_KEYWORDS.search(message)) or any(
+        k in lowered for k in ("packet loss", "downtime", "interrupt", "impact", "risk", "vmotion")
+    )
+    question_like = ("?" in message) or ("\uFF1F" in message) or any(k in message for k in ("吗", "么"))
+    return bool(has_context and (has_keyword or question_like))
+
+
+def _is_risk_sensitive_question(message: str) -> bool:
+    return bool(GENERIC_QA_RISK_KEYWORDS.search(message))
+
+
+def _is_diagnostic_query_intent(message: str) -> bool:
+    lowered = message.lower()
+    if DIAGNOSIS_KEYWORDS.search(message):
+        return True
+    has_platform_context = bool(VMWARE_KEYWORDS.search(message) or K8S_KEYWORDS.search(message))
+    if not has_platform_context:
+        return False
+    has_status_signal = bool(DIAGNOSIS_STATUS_SIGNALS.search(message))
+    has_question_signal = any(
+        token in lowered
+        for token in (
+            "what problem",
+            "what issue",
+            "why",
+            "reason",
+            "possible issue",
+        )
+    ) or any(token in message for token in ("什么问题", "可能是什么问题", "怎么回事", "原因"))
+    return bool(has_status_signal or has_question_signal)
+
+
+def _expand_qa_terms(message: str) -> list[str]:
+    terms: list[str] = []
+    lowered = message.lower()
+    if "热迁移" in message or "vmotion" in lowered or "迁移" in message:
+        terms.extend(["热迁移", "vMotion", "迁移中断", "丢包"])
+    if "丢包" in message:
+        terms.extend(["丢包", "网络抖动", "arp"])
+    if "中断" in message:
+        terms.extend(["中断", "业务连续性", "回退"])
+    words = re.findall(r"[A-Za-z0-9._-]{2,}", message)
+    for w in words[:8]:
+        if w.lower() not in {"vcenter", "vsphere"}:
+            terms.append(w)
+    zh_words = re.findall(r"[\u4e00-\u9fff]{2,6}", message)
+    terms.extend(zh_words[:10])
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in terms:
+        k = t.strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(t.strip())
+    return out[:15]
+
+
+async def _knowledge_search_for_ops_qa(message: str) -> tuple[list[dict[str, Any]], list[str]]:
+    url = f"{RESOURCE_BFF_URL.rstrip('/')}/api/v1/knowledge/articles?status=published"
+    terms = _expand_qa_terms(message)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url)
+        body = resp.json()
+        if not body.get("success"):
+            return [], terms
+        items = (body.get("data") or {}).get("items") or []
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for it in items:
+            title = str(it.get("title", ""))
+            summary = str(it.get("content_summary", ""))
+            tags = " ".join(str(x) for x in (it.get("tags") or []))
+            blob = f"{title} {summary} {tags}".lower()
+            score = 0.0
+            for t in terms:
+                if t.lower() in blob:
+                    score += 1.0
+            if "迁移" in message and ("vmware" in blob or "vmotion" in blob):
+                score += 1.2
+            if score > 0:
+                scored.append((score, it))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        hits: list[dict[str, Any]] = []
+        for score, it in scored[:3]:
+            hits.append(
+                {
+                    "id": it.get("id"),
+                    "title": it.get("title"),
+                    "summary": it.get("content_summary") or "",
+                    "score": round(score, 2),
+                }
+            )
+        return hits, terms
+    except Exception:
+        return [], terms
+
+
+async def _llm_generic_ops_qa(message: str, evidence_text: str, include_risk_guard: bool) -> str | None:
+    prompt = (
+        "你是资深运维专家。请严格用中文并按以下段落输出：\n"
+        "1) 结论\n2) 原理\n3) 建议\n"
+        + ("4) 验证步骤\n5) 回退建议\n" if include_risk_guard else "")
+        + "要求：结论明确，不要模糊；建议可执行。"
+    )
+    user_content = (
+        f"用户问题：{message}\n\n"
+        f"可用知识证据：\n{evidence_text if evidence_text.strip() else '- 未命中知识库'}\n\n"
+        "请基于证据优先回答；若证据不足，补充通用最佳实践并显式说明。"
+    )
+    return await chat_completion(
+        [{"role": "user", "content": user_content}],
+        system_prompt=prompt,
+        temperature=0.2,
+        max_tokens=1200,
+    )
+
+
+def _is_valid_generic_ops_answer(text: str, include_risk_guard: bool) -> bool:
+    content = (text or "").strip()
+    if len(content) < 60:
+        return False
+    required = ["结论", "原理", "建议"]
+    if include_risk_guard:
+        required.extend(["验证步骤", "回退建议"])
+    if any(k not in content for k in required):
+        return False
+    suspicious = ["用户问题：", "可用知识证据：", "请基于证据优先回答", "你是资深运维专家"]
+    return not any(k in content for k in suspicious)
+
+
+def _fallback_generic_ops_qa_text(message: str, hits: list[dict[str, Any]], include_risk_guard: bool) -> str:
+    evidence_hint = "；".join([f"{h.get('title')}" for h in hits[:2]]) if hits else "未命中知识库，以下基于通用实践"
+    text = (
+        "结论：通常不会出现明显业务中断，但可能存在短暂网络抖动窗口。\n\n"
+        "原理：迁移过程中计算状态在源与目标主机切换，虚拟网卡重绑定及 ARP/邻居缓存刷新会带来毫秒到秒级波动；"
+        "若目标主机资源紧张或网络配置不一致，抖动会放大。\n\n"
+        "建议：\n"
+        "1. 迁移前确认目标主机 CPU/内存余量与网络 VLAN/MTU 一致。\n"
+        "2. 对关键业务先在低峰时段灰度迁移，避免批量同时迁移。\n"
+        "3. 迁移前后对核心链路时延、丢包和应用探针做连续观测。\n"
+        f"4. 依据：{evidence_hint}。"
+    )
+    if include_risk_guard:
+        text += (
+            "\n\n验证步骤：\n"
+            "1. 迁移前后持续 ping 目标服务与网关，记录时延/丢包。\n"
+            "2. 对业务健康探针和关键交易接口做连续压测/拨测。\n"
+            "3. 对比迁移前后主机与虚机网络/CPU 抖动指标。\n"
+            "\n回退建议：\n"
+            "1. 发现持续异常时立即暂停批量迁移并回迁异常 VM。\n"
+            "2. 保留变更窗口内回退路径，恢复至迁移前稳定节点。\n"
+            "3. 回退后复盘网络一致性与目标主机负载瓶颈。"
+        )
+    return text
 
 
 def _is_confirmation(message: str) -> bool:
@@ -703,6 +902,66 @@ async def _llm_chat(message: str, history: list[dict] | None = None) -> str | No
     return await chat_completion(messages, system_prompt=SYSTEM_PROMPT)
 
 
+async def _run_rootcause_workflow(description: str, object_id: str | None, session_id: str | None = None) -> dict | None:
+    context = {
+        "incident_id": None,
+        "session_id": session_id or "adhoc",
+        "query": description,
+        "object_id": object_id,
+        "connection_id": "conn-vcenter-prod",
+        "topology_depth": 2,
+        "evidence_url": EVIDENCE_AGGREGATOR_URL,
+        "topology_url": TOPOLOGY_SERVICE_URL,
+        "knowledge_url": KNOWLEDGE_SERVICE_URL,
+        "source_refs": [],
+    }
+    try:
+        result = await run_multi_agent_rootcause(context)
+        root = result.get("root_cause") or {}
+        root_summary = root.get("summary") or "未形成明确根因。"
+        confidence = root.get("confidence", 0.0)
+        evidence_refs = result.get("evidence_refs", [])
+        conclusion_status = result.get("conclusion_status") or "insufficient_evidence"
+        evidence_sufficiency = result.get("evidence_sufficiency") or {}
+        counter_result = result.get("counter_evidence_result") or {}
+        return {
+            "assistant_message": (
+                f"RootCauseAgent 结论：{root_summary}\n"
+                f"结论状态：{conclusion_status}\n"
+                f"置信度：{confidence}\n"
+                f"证据数量：{len(evidence_refs)}\n"
+                f"证据充分性：{evidence_sufficiency.get('sufficiency_score', 0):.2f}\n"
+                f"反证结果：{counter_result.get('status', 'inconclusive')}"
+            ),
+            "evidences": result.get("evidences", []),
+            "evidence_refs": evidence_refs,
+            "root_cause": root,
+            "root_cause_candidates": result.get("root_cause_candidates", []),
+            "hypotheses": result.get("hypotheses", []),
+            "winning_hypothesis": result.get("winning_hypothesis"),
+            "counter_evidence_result": counter_result,
+            "conclusion_status": conclusion_status,
+            "evidence_sufficiency": evidence_sufficiency,
+            "contradictions": result.get("contradictions", []),
+            "recommended_actions": result.get("recommended_actions", []),
+            "analysis_steps": result.get("analysis_steps", []),
+            "tool_traces": [
+                {
+                    "tool_name": "multi_agent.rootcause",
+                    "gateway": "orchestrator",
+                    "input_summary": '{"agents":"Evidence->Topology->Knowledge->RootCause->Remediation"}',
+                    "output_summary": f"root_confidence={confidence}, evidence={len(evidence_refs)}, conclusion={conclusion_status}",
+                    "duration_ms": 0,
+                    "status": "success",
+                    "timestamp": _now(),
+                }
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("rootcause workflow failed: %s", exc)
+        return None
+
+
 def _build_diagnosis(
     description: str,
     assistant_content: str | None = None,
@@ -710,20 +969,34 @@ def _build_diagnosis(
     evidences: list[dict] | None = None,
     tool_traces: list[dict] | None = None,
     root_cause_candidates: list[dict] | None = None,
+    root_cause: dict | None = None,
     recommended_actions: list[str] | None = None,
+    analysis_steps: list[dict] | None = None,
+    hypotheses: list[dict] | None = None,
+    winning_hypothesis: dict | None = None,
+    counter_evidence_result: dict | None = None,
+    conclusion_status: str | None = None,
+    evidence_sufficiency: dict | None = None,
+    contradictions: list[dict] | None = None,
 ) -> dict:
     diagnosis_id = f"dg-{_uid()}"
-    diag_evidences = evidences or MOCK_EVIDENCES
+    diag_evidences = evidences or []
     diag_tool_traces = tool_traces or _build_tool_traces(description)
 
     if not assistant_content:
-        assistant_content = _build_mock_diagnosis_text(description)
+        assistant_content = "已完成诊断分析，但当前证据不足，请补充更具体的故障对象或时间范围后重试。"
 
     return {
         "diagnosis_id": diagnosis_id,
         "description": description,
         "object_id": object_id,
         "assistant_message": assistant_content,
+        "root_cause": root_cause
+        or {
+            "summary": "尚未收敛唯一根因",
+            "confidence": 0.5,
+            "evidence_refs": [e["evidence_id"] for e in diag_evidences][:3],
+        },
         "root_cause_candidates": root_cause_candidates
         or [
             {
@@ -739,12 +1012,19 @@ def _build_diagnosis(
         ],
         "evidence_refs": [e["evidence_id"] for e in diag_evidences],
         "evidences": diag_evidences,
+        "hypotheses": hypotheses or [],
+        "winning_hypothesis": winning_hypothesis,
+        "counter_evidence_result": counter_evidence_result,
+        "conclusion_status": conclusion_status,
+        "evidence_sufficiency": evidence_sufficiency,
+        "contradictions": contradictions or [],
         "recommended_actions": recommended_actions
         or [
-            "检查 app-server-01 JVM 堆内存配置和 GC 日志",
-            "对 esxi-node03 当前 VM 负载做平衡评估",
-            "考虑将 app-server-01 迁移到低负载主机",
+            "补充目标对象（主机/虚机/集群）并重新执行诊断。",
+            "检查最近变更与告警时间线，确认异常起点。",
+            "按风险从低到高执行只读检查后再申请处置。",
         ],
+        "analysis_steps": analysis_steps or [],
         "tool_traces": diag_tool_traces,
         "simulated_at": _now(),
         "created_at": _now(),
@@ -760,10 +1040,17 @@ async def health() -> dict:
 @app.post("/api/v1/orchestrate/diagnose")
 async def orchestrate_diagnose(body: DiagnoseRequest) -> dict:
     try:
-        runtime_context = await _fetch_real_context(body.description)
+        runtime_context = await _run_rootcause_workflow(body.description, body.object_id)
+        should_fallback_context = (
+            not runtime_context
+            or not isinstance(runtime_context.get("evidences"), list)
+            or len(runtime_context.get("evidences", [])) == 0
+        )
+        if should_fallback_context:
+            runtime_context = await _fetch_real_context(body.description)
         if not runtime_context and (VMWARE_KEYWORDS.search(body.description) or K8S_KEYWORDS.search(body.description)):
             return make_error("未获取到实时资源数据，请检查 vCenter/K8s 连接与服务状态后重试")
-        evidence_source = runtime_context["evidences"] if runtime_context else MOCK_EVIDENCES
+        evidence_source = runtime_context["evidences"] if runtime_context else []
         evidence_summary = "\n".join(
             f"- [{e['source_type']}] {e['summary']} (置信度 {e['confidence']:.0%})" for e in evidence_source
         )
@@ -776,8 +1063,10 @@ async def orchestrate_diagnose(body: DiagnoseRequest) -> dict:
             body.object_id,
             evidences=runtime_context["evidences"] if runtime_context else None,
             tool_traces=runtime_context["tool_traces"] if runtime_context else None,
+            root_cause=runtime_context.get("root_cause") if runtime_context else None,
             root_cause_candidates=runtime_context["root_cause_candidates"] if runtime_context else None,
             recommended_actions=runtime_context["recommended_actions"] if runtime_context else None,
+            analysis_steps=runtime_context.get("analysis_steps") if runtime_context else None,
         )
         return make_success(data)
     except Exception as exc:
@@ -1224,8 +1513,15 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                 }
             )
 
-        if DIAGNOSIS_KEYWORDS.search(body.message):
-            runtime_context = await _fetch_real_context(body.message)
+        if _is_diagnostic_query_intent(body.message):
+            runtime_context = await _run_rootcause_workflow(body.message, None, body.session_id)
+            should_fallback_context = (
+                not runtime_context
+                or not isinstance(runtime_context.get("evidences"), list)
+                or len(runtime_context.get("evidences", [])) == 0
+            )
+            if should_fallback_context:
+                runtime_context = await _fetch_real_context(body.message)
             if not runtime_context and (VMWARE_KEYWORDS.search(body.message) or K8S_KEYWORDS.search(body.message)):
                 return make_success(
                     {
@@ -1243,7 +1539,7 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                         ),
                     }
                 )
-            evidence_source = runtime_context["evidences"] if runtime_context else MOCK_EVIDENCES
+            evidence_source = runtime_context["evidences"] if runtime_context else []
             evidence_summary = "\n".join(
                 f"- [{e['source_type']}] {e['summary']} (置信度 {e['confidence']:.0%})" for e in evidence_source
             )
@@ -1255,8 +1551,16 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                 llm_text,
                 evidences=runtime_context["evidences"] if runtime_context else None,
                 tool_traces=runtime_context["tool_traces"] if runtime_context else None,
+                root_cause=runtime_context.get("root_cause") if runtime_context else None,
                 root_cause_candidates=runtime_context["root_cause_candidates"] if runtime_context else None,
                 recommended_actions=runtime_context["recommended_actions"] if runtime_context else None,
+                analysis_steps=runtime_context.get("analysis_steps") if runtime_context else None,
+                hypotheses=runtime_context.get("hypotheses") if runtime_context else None,
+                winning_hypothesis=runtime_context.get("winning_hypothesis") if runtime_context else None,
+                counter_evidence_result=runtime_context.get("counter_evidence_result") if runtime_context else None,
+                conclusion_status=runtime_context.get("conclusion_status") if runtime_context else None,
+                evidence_sufficiency=runtime_context.get("evidence_sufficiency") if runtime_context else None,
+                contradictions=runtime_context.get("contradictions") if runtime_context else None,
             )
             return make_success(
                 {
@@ -1265,9 +1569,17 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                     "assistant_message": diag["assistant_message"],
                     "agent_name": "RCAAgent",
                     "diagnosis_id": diag["diagnosis_id"],
+                    "root_cause": diag.get("root_cause"),
                     "root_cause_candidates": diag["root_cause_candidates"],
+                    "hypotheses": diag.get("hypotheses", []),
+                    "winning_hypothesis": diag.get("winning_hypothesis"),
+                    "counter_evidence_result": diag.get("counter_evidence_result"),
+                    "conclusion_status": diag.get("conclusion_status"),
+                    "evidence_sufficiency": diag.get("evidence_sufficiency"),
+                    "contradictions": diag.get("contradictions", []),
                     "evidence_refs": diag["evidence_refs"],
                     "evidences": diag["evidences"],
+                    "analysis_steps": diag.get("analysis_steps", []),
                     "recommended_actions": diag["recommended_actions"],
                     "tool_traces": diag["tool_traces"],
                     "reasoning_summary": _reasoning_summary(
@@ -1278,6 +1590,95 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                 }
             )
 
+        if _is_generic_ops_qa_intent(body.message):
+            include_risk_guard = _is_risk_sensitive_question(body.message)
+            await _write_audit_log(
+                {
+                    "event_type": "generic_qa_started",
+                    "severity": "info",
+                    "actor": "OpsQAAssistant",
+                    "actor_type": "agent",
+                    "action": "generic_ops_qa",
+                    "outcome": "success",
+                    "metadata": {"session_id": body.session_id},
+                }
+            )
+            hits, terms = await _knowledge_search_for_ops_qa(body.message)
+            await _write_audit_log(
+                {
+                    "event_type": "generic_qa_retrieved",
+                    "severity": "info",
+                    "actor": "OpsQAAssistant",
+                    "actor_type": "agent",
+                    "action": "knowledge.retrieve",
+                    "outcome": "success",
+                    "metadata": {"hits": len(hits), "terms": terms[:8]},
+                }
+            )
+            evidence_text = "\n".join(
+                f"- [{h.get('id')}] {h.get('title')}: {h.get('summary', '')}" for h in hits
+            )
+            llm_text = await _llm_generic_ops_qa(body.message, evidence_text, include_risk_guard)
+            used_fallback = not _is_valid_generic_ops_answer(llm_text or "", include_risk_guard)
+            assistant_message = llm_text or _fallback_generic_ops_qa_text(body.message, hits, include_risk_guard)
+            if used_fallback:
+                assistant_message = _fallback_generic_ops_qa_text(body.message, hits, include_risk_guard)
+            await _write_audit_log(
+                {
+                    "event_type": "generic_qa_fallback" if used_fallback else "generic_qa_completed",
+                    "severity": "info" if not used_fallback else "warning",
+                    "actor": "OpsQAAssistant",
+                    "actor_type": "agent",
+                    "action": "generic_ops_qa",
+                    "outcome": "success",
+                    "metadata": {"hits": len(hits), "used_fallback": used_fallback},
+                }
+            )
+            return make_success(
+                {
+                    "session_id": body.session_id,
+                    "message_id": f"msg-{_uid()}",
+                    "assistant_message": assistant_message,
+                    "agent_name": "OpsQAAssistant",
+                    "tool_traces": [
+                        {
+                            "tool_name": "knowledge.search",
+                            "gateway": "knowledge",
+                            "input_summary": f'{{"terms":"{",".join(terms[:6])}"}}',
+                            "output_summary": f"hits={len(hits)}",
+                            "duration_ms": 0,
+                            "status": "success",
+                            "timestamp": _now(),
+                        },
+                        {
+                            "tool_name": "llm.chat_completion",
+                            "gateway": "llm",
+                            "input_summary": '{"template":"结论+原理+建议"}',
+                            "output_summary": "used_fallback" if used_fallback else "generated",
+                            "duration_ms": 0,
+                            "status": "success" if not used_fallback else "warning",
+                            "timestamp": _now(),
+                        },
+                    ],
+                    "evidence_refs": [str(h.get("id")) for h in hits if h.get("id")],
+                    "evidences": [
+                        {
+                            "evidence_id": str(h.get("id") or f"kb-{i}"),
+                            "source_type": "knowledge",
+                            "summary": f"{h.get('title')}",
+                            "confidence": min(0.95, 0.55 + float(h.get("score", 0)) * 0.1),
+                            "timestamp": _now(),
+                            "raw_data": {"kb_id": h.get("id")},
+                        }
+                        for i, h in enumerate(hits, 1)
+                    ],
+                    "reasoning_summary": _reasoning_summary(
+                        "用户提出了通用运维问答问题，需要风险导向解释。",
+                        "先检索知识库证据，再按固定模板生成结论与建议。",
+                        "已返回结构化运维问答，并附带验证与回退建议。",
+                    ),
+                }
+            )
         llm_reply = await _llm_chat(body.message, body.history)
         assistant_text = llm_reply or (
             f"收到您的消息：{body.message}\n\n"

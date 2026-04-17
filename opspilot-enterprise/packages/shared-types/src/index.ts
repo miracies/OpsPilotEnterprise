@@ -16,3 +16,4 @@ export * from "./connection";
 export * from "./secret";
 export * from "./resource";
 export * from "./execution";
+export * from "./topology";

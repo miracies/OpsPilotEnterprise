@@ -16,6 +16,8 @@ class ToolMeta(BaseModel):
     idempotent: bool
     version: str
     tags: list[str] = []
+    input_schema: dict | None = None
+    output_schema: dict | None = None
 
 
 class ToolHealthStatus(BaseModel):

@@ -1,0 +1,2 @@
+INFO:     127.0.0.1:64697 - "GET /knowledge/articles?status=published&q=Host+10.0.80.11+overallStatus+%3D+yellow HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59930 - "GET /knowledge/articles?status=published&q=Host+10.0.80.11+overallStatus+%3D+yellow HTTP/1.1" 200 OK

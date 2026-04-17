@@ -25,6 +25,7 @@ services:
       APPROVAL_CENTER_URL: http://approval-center:8070
       GOVERNANCE_SERVICE_URL: http://governance:8071
       KNOWLEDGE_SERVICE_URL: http://knowledge:8072
+      TOPOLOGY_SERVICE_URL: http://topology-service:8090
 
   orchestrator:
     build:
@@ -77,6 +78,13 @@ services:
       dockerfile: services/evidence-aggregator/Dockerfile
     ports:
       - "8050:8050"
+
+  topology-service:
+    build:
+      context: ../../
+      dockerfile: services/topology-service/Dockerfile
+    ports:
+      - "8090:8090"
 
   event-ingestion:
     build:

@@ -38,12 +38,16 @@ VCENTER_PROD_VM_EXPORT_QUERY_KEYWORDS = re.compile(
 )
 CONFIRM_KEYWORDS = re.compile(r"^(\u786e\u8ba4|\u662f|\u7ee7\u7eed|\u67e5\u8be2|ok|yes)$", re.I)
 DIAGNOSIS_KEYWORDS = re.compile(
-    r"\u5206\u6790|\u8bca\u65ad|\u6392\u67e5|\u544a\u8b66|\u6839\u56e0|\u5f02\u5e38|\u6545\u969c|\u6392\u969c|\u4e3a\u4ec0\u4e48|\u539f\u56e0|\u68c0\u67e5",
+    r"\u5206\u6790|\u8bca\u65ad|\u6392\u67e5|\u544a\u8b66|\u6839\u56e0|\u5f02\u5e38|\u6545\u969c|\u6392\u969c|\u4e3a\u4ec0\u4e48|\u539f\u56e0|\u68c0\u67e5|\u95ee\u9898|\u4ec0\u4e48\u95ee\u9898",
     re.I,
 )
 VMWARE_KEYWORDS = re.compile(r"vmware|vcenter|esxi|\u865a\u62df\u673a|\u4e3b\u673a|\u6570\u636e\u5b58\u50a8", re.I)
 K8S_KEYWORDS = re.compile(r"k8s|kubernetes|pod|deployment|node|namespace|\u5bb9\u5668|\u96c6\u7fa4", re.I)
 HOST_IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+DIAGNOSIS_STATUS_SIGNALS = re.compile(
+    r"overallstatus|connectionstate|yellow|red|gray|\u975e\u5065\u5eb7|\u4e0d\u5065\u5eb7|\u72b6\u6001\u5f02\u5e38|\u5065\u5eb7\u72b6\u6001",
+    re.I,
+)
 PENDING_INTENT = "resource_query_vcenter_prod_vm_count"
 EXPORT_COLUMN_ALIAS_MAP: dict[str, tuple[str, ...]] = {
     "name": ("name",),
@@ -78,6 +82,18 @@ SUPPORTED_EXPORT_COLUMNS = {
     "datastore_names",
 }
 DEFAULT_VM_EXPORT_COLUMNS = ["vm_id", "name", "power_state"]
+GENERIC_OPS_QA_KEYWORDS = re.compile(
+    r"是否会|会不会|会有|影响|中断|丢包|风险|原理|注意事项|最佳实践|怎么避免|如何避免",
+    re.I,
+)
+GENERIC_OPS_QA_CONTEXT = re.compile(
+    r"虚拟机|vm|vmotion|热迁移|迁移|主机|esxi|vcenter|vsphere|网络|k8s|kubernetes|pod|deployment|容器|存储|数据库|告警|故障|中断",
+    re.I,
+)
+GENERIC_QA_RISK_KEYWORDS = re.compile(r"生产|中断|丢包|故障|风险|宕机|抖动|失败|回退", re.I)
+LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "glm-5-turbo")
 
 
 def _now() -> str:
@@ -175,13 +191,33 @@ def _extract_host_target_from_message(message: str) -> str | None:
         r"(?:主机|host)\s*[:：]?\s*([A-Za-z0-9._:-]+)",
         r"([A-Za-z0-9._:-]+)\s*(?:主机|host)",
     ]
-    stopwords = {"vcenter", "vsphere", "prod", "生产", "生产环境", "health", "status", "健康状况", "分析"}
+    stopwords = {
+        "vcenter",
+        "vsphere",
+        "prod",
+        "生产",
+        "生产环境",
+        "health",
+        "status",
+        "host",
+        "esxi",
+        "健康状况",
+        "分析",
+        "overallstatus",
+        "connectionstate",
+        "powerstate",
+        "yellow",
+        "red",
+        "green",
+        "gray",
+    }
     for pattern in patterns:
         m = re.search(pattern, message, re.I)
         if not m:
             continue
         target = (m.group(1) or "").strip()
-        if target and target.lower() not in stopwords:
+        target_l = target.lower()
+        if target and target_l not in stopwords:
             return target
     return None
 
@@ -260,6 +296,187 @@ async def _write_audit_log(payload: dict[str, Any]) -> None:
             await client.post(f"{EVENT_INGESTION_URL.rstrip('/')}/api/v1/audit/logs", json=payload)
     except Exception:
         return
+
+
+def _is_generic_ops_qa_intent(message: str) -> bool:
+    if _is_diagnostic_query_intent(message):
+        return False
+    lowered = message.lower()
+    has_context = bool(GENERIC_OPS_QA_CONTEXT.search(message))
+    has_keyword = bool(GENERIC_OPS_QA_KEYWORDS.search(message)) or any(
+        k in lowered for k in ("packet loss", "downtime", "interrupt", "impact", "risk", "vmotion")
+    )
+    question_like = ("?" in message) or ("\uFF1F" in message) or any(k in message for k in ("吗", "么"))
+    return bool(has_context and (has_keyword or question_like))
+
+
+def _is_risk_sensitive_question(message: str) -> bool:
+    return bool(GENERIC_QA_RISK_KEYWORDS.search(message))
+
+
+def _is_diagnostic_query_intent(message: str) -> bool:
+    lowered = message.lower()
+    if DIAGNOSIS_KEYWORDS.search(message):
+        return True
+    has_platform_context = bool(VMWARE_KEYWORDS.search(message) or K8S_KEYWORDS.search(message))
+    if not has_platform_context:
+        return False
+    has_status_signal = bool(DIAGNOSIS_STATUS_SIGNALS.search(message))
+    has_question_signal = any(
+        token in lowered
+        for token in (
+            "what problem",
+            "what issue",
+            "why",
+            "reason",
+            "possible issue",
+        )
+    ) or any(token in message for token in ("什么问题", "可能是什么问题", "怎么回事", "原因"))
+    return bool(has_status_signal or has_question_signal)
+
+
+def _expand_qa_terms(message: str) -> list[str]:
+    terms: list[str] = []
+    lowered = message.lower()
+    if "热迁移" in message or "vmotion" in lowered or "迁移" in message:
+        terms.extend(["热迁移", "vMotion", "迁移中断", "丢包"])
+    if "丢包" in message:
+        terms.extend(["丢包", "网络抖动", "arp"])
+    if "中断" in message:
+        terms.extend(["中断", "业务连续性", "回退"])
+    words = re.findall(r"[A-Za-z0-9._-]{2,}", message)
+    for w in words[:8]:
+        if w.lower() not in {"vcenter", "vsphere"}:
+            terms.append(w)
+    zh_words = re.findall(r"[\u4e00-\u9fff]{2,6}", message)
+    terms.extend(zh_words[:10])
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in terms:
+        k = t.strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(t.strip())
+    return out[:15]
+
+
+async def _knowledge_search_for_ops_qa(message: str) -> tuple[list[dict[str, Any]], list[str]]:
+    terms = _expand_qa_terms(message)
+    url = f"{RESOURCE_BFF_URL.rstrip('/')}/api/v1/knowledge/articles?status=published"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url)
+        body = resp.json()
+        if not body.get("success"):
+            return [], terms
+        items = (body.get("data") or {}).get("items") or []
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for it in items:
+            title = str(it.get("title", ""))
+            summary = str(it.get("content_summary", ""))
+            tags = " ".join(str(x) for x in (it.get("tags") or []))
+            blob = f"{title} {summary} {tags}".lower()
+            score = 0.0
+            for t in terms:
+                if t.lower() in blob:
+                    score += 1.0
+            if "迁移" in message and ("vmware" in blob or "vmotion" in blob):
+                score += 1.2
+            if score > 0:
+                scored.append((score, it))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        hits: list[dict[str, Any]] = []
+        for score, it in scored[:3]:
+            hits.append(
+                {
+                    "id": it.get("id"),
+                    "title": it.get("title"),
+                    "summary": it.get("content_summary") or "",
+                    "score": round(score, 2),
+                }
+            )
+        return hits, terms
+    except Exception:
+        return [], terms
+
+
+async def _llm_generic_ops_qa(message: str, evidence_text: str, include_risk_guard: bool) -> str | None:
+    if not LLM_API_KEY:
+        return None
+    payload = {
+        "model": LLM_MODEL,
+        "temperature": 0.2,
+        "max_tokens": 1200,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是资深运维专家。请严格用中文并按段落输出：结论、原理、建议"
+                    + ("、验证步骤、回退建议" if include_risk_guard else "")
+                    + "。要求：结论明确，建议可执行。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"用户问题：{message}\n\n"
+                    f"可用知识证据：\n{evidence_text if evidence_text.strip() else '- 未命中知识库'}\n\n"
+                    "请优先依据证据回答；证据不足时补充通用最佳实践并明确说明。"
+                ),
+            },
+        ],
+    }
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(f"{LLM_API_BASE}/chat/completions", json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        content = str(msg.get("content") or "").strip()
+        return content or None
+    except Exception:
+        return None
+
+
+def _is_valid_generic_ops_answer(text: str, include_risk_guard: bool) -> bool:
+    content = (text or "").strip()
+    if len(content) < 60:
+        return False
+    required = ["结论", "原理", "建议"]
+    if include_risk_guard:
+        required.extend(["验证步骤", "回退建议"])
+    if any(k not in content for k in required):
+        return False
+    suspicious = ["用户问题：", "可用知识证据：", "请优先依据证据回答", "你是资深运维专家"]
+    return not any(k in content for k in suspicious)
+
+
+def _fallback_generic_ops_qa_text(message: str, hits: list[dict[str, Any]], include_risk_guard: bool) -> str:
+    evidence_hint = "；".join([f"{h.get('title')}" for h in hits[:2]]) if hits else "未命中知识库，以下基于通用实践"
+    text = (
+        "结论：通常不会出现明显业务中断，但可能存在短暂网络抖动窗口。\n\n"
+        "原理：迁移过程中计算状态在源与目标主机切换，虚拟网卡重绑定及 ARP/邻居缓存刷新会带来毫秒到秒级波动；"
+        "若目标主机资源紧张或网络配置不一致，抖动会放大。\n\n"
+        "建议：\n"
+        "1. 迁移前确认目标主机 CPU/内存余量与网络 VLAN/MTU 一致。\n"
+        "2. 对关键业务先在低峰时段灰度迁移，避免批量同时迁移。\n"
+        "3. 迁移前后对核心链路时延、丢包和应用探针做连续观测。\n"
+        f"4. 依据：{evidence_hint}。"
+    )
+    if include_risk_guard:
+        text += (
+            "\n\n验证步骤：\n"
+            "1. 迁移前后持续 ping 目标服务与网关，记录时延/丢包。\n"
+            "2. 对业务健康探针和关键交易接口做连续压测/拨测。\n"
+            "3. 对比迁移前后主机与虚机网络/CPU 抖动指标。\n"
+            "\n回退建议：\n"
+            "1. 发现持续异常时立即暂停批量迁移并回迁异常 VM。\n"
+            "2. 保留变更窗口内回退路径，恢复至迁移前稳定节点。\n"
+            "3. 回退后复盘网络一致性与目标主机负载瓶颈。"
+        )
+    return text
 
 
 def _normalize_requested_columns(message: str) -> tuple[list[str], list[str]]:
@@ -355,8 +572,10 @@ def _reasoning_summary(intent_understanding: str, execution_plan: str, result_su
 def _predict_agent_and_plan(message: str) -> tuple[str, str]:
     if _is_vcenter_prod_vm_export_query(message) or _is_vcenter_prod_vm_query(message):
         return "ResourceQueryAgent", "识别资源查询/导出意图并调用 vCenter 资源接口"
-    if DIAGNOSIS_KEYWORDS.search(message):
-        return "RCAAgent", "收集证据并执行诊断分析"
+    if _is_diagnostic_query_intent(message):
+        return "RCAAgent", "收集运行时证据并执行故障诊断分析"
+    if _is_generic_ops_qa_intent(message):
+        return "OpsQAAssistant", "检索知识库并生成结构化通用运维问答"
     return "Orchestrator", "执行通用问答"
 
 
@@ -404,6 +623,23 @@ def _append_progress_event(
             "agent_name": agent_name,
         }
     )
+
+
+def _append_analysis_step_events(message: dict[str, Any], steps: list[dict[str, Any]] | None) -> None:
+    if not steps:
+        return
+    for step in steps:
+        agent = str(step.get("agent") or "Agent")
+        status = str(step.get("status") or "in_progress")
+        stage_status = "success" if status == "success" else "error" if status == "failed" else "in_progress"
+        summary = str(step.get("summary") or "执行完成")
+        _append_progress_event(
+            message,
+            "tool_done" if stage_status == "success" else "tool_error" if stage_status == "error" else "tool_invoking",
+            f"{agent}: {summary}",
+            stage_status,
+            agent_name=agent,
+        )
 
 
 async def _run_orchestrator(session_id: str, message: str, history: list[dict]) -> dict | None:
@@ -793,7 +1029,94 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
             ),
         }
 
-    is_diag = bool(DIAGNOSIS_KEYWORDS.search(message))
+    if _is_generic_ops_qa_intent(message):
+        include_risk_guard = _is_risk_sensitive_question(message)
+        await _write_audit_log(
+            {
+                "event_type": "generic_qa_started",
+                "severity": "info",
+                "actor": "OpsQAAssistant",
+                "actor_type": "agent",
+                "action": "generic_ops_qa",
+                "outcome": "success",
+                "metadata": {"session_id": session_id},
+            }
+        )
+        hits, terms = await _knowledge_search_for_ops_qa(message)
+        await _write_audit_log(
+            {
+                "event_type": "generic_qa_retrieved",
+                "severity": "info",
+                "actor": "OpsQAAssistant",
+                "actor_type": "agent",
+                "action": "knowledge.retrieve",
+                "outcome": "success",
+                "metadata": {"hits": len(hits), "terms": terms[:8]},
+            }
+        )
+        evidence_text = "\n".join(
+            f"- [{h.get('id')}] {h.get('title')}: {h.get('summary', '')}" for h in hits
+        )
+        llm_text = await _llm_generic_ops_qa(message, evidence_text, include_risk_guard)
+        used_fallback = not _is_valid_generic_ops_answer(llm_text or "", include_risk_guard)
+        assistant_message = llm_text or _fallback_generic_ops_qa_text(message, hits, include_risk_guard)
+        if used_fallback:
+            assistant_message = _fallback_generic_ops_qa_text(message, hits, include_risk_guard)
+        await _write_audit_log(
+            {
+                "event_type": "generic_qa_fallback" if used_fallback else "generic_qa_completed",
+                "severity": "info" if not used_fallback else "warning",
+                "actor": "OpsQAAssistant",
+                "actor_type": "agent",
+                "action": "generic_ops_qa",
+                "outcome": "success",
+                "metadata": {"hits": len(hits), "used_fallback": used_fallback},
+            }
+        )
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": assistant_message,
+            "agent_name": "OpsQAAssistant",
+            "tool_traces": [
+                {
+                    "tool_name": "knowledge.search",
+                    "gateway": "knowledge",
+                    "input_summary": f'{{"terms":"{",".join(terms[:6])}"}}',
+                    "output_summary": f"hits={len(hits)}",
+                    "duration_ms": 0,
+                    "status": "success",
+                    "timestamp": _now(),
+                },
+                {
+                    "tool_name": "llm.chat_completion",
+                    "gateway": "llm",
+                    "input_summary": '{"template":"结论+原理+建议"}',
+                    "output_summary": "used_fallback" if used_fallback else "generated",
+                    "duration_ms": 0,
+                    "status": "success" if not used_fallback else "warning",
+                    "timestamp": _now(),
+                },
+            ],
+            "evidence_refs": [str(h.get("id")) for h in hits if h.get("id")],
+            "evidences": [
+                {
+                    "evidence_id": str(h.get("id") or f"kb-{i}"),
+                    "source_type": "knowledge",
+                    "summary": f"{h.get('title')}",
+                    "confidence": min(0.95, 0.55 + float(h.get("score", 0)) * 0.1),
+                    "timestamp": _now(),
+                    "raw_data": {"kb_id": h.get("id")},
+                }
+                for i, h in enumerate(hits, 1)
+            ],
+            "reasoning_summary": _reasoning_summary(
+                "用户提出了通用运维问答问题，需要风险导向解释。",
+                "先检索知识库证据，再按固定模板生成结论与建议。",
+                "已返回结构化运维问答，并附带验证与回退建议。",
+            ),
+        }
+
+    is_diag = _is_diagnostic_query_intent(message)
     if is_diag and VMWARE_KEYWORDS.search(message):
         inventory = await _query_vcenter_prod_inventory()
         if not inventory:
@@ -961,6 +1284,7 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
         "agent_name": "Orchestrator",
         "tool_traces": [],
         "evidence_refs": [],
+        "root_cause": None,
         "evidences": [],
         "root_cause_candidates": None,
         "recommended_actions": None,
@@ -999,17 +1323,26 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
             target["agent_name"] = data.get("agent_name")
             target["tool_traces"] = data.get("tool_traces", [])
             target["evidence_refs"] = data.get("evidence_refs", [])
+            target["root_cause"] = data.get("root_cause")
             target["root_cause_candidates"] = data.get("root_cause_candidates")
+            target["hypotheses"] = data.get("hypotheses", [])
+            target["winning_hypothesis"] = data.get("winning_hypothesis")
+            target["counter_evidence_result"] = data.get("counter_evidence_result")
+            target["conclusion_status"] = data.get("conclusion_status")
+            target["evidence_sufficiency"] = data.get("evidence_sufficiency")
+            target["contradictions"] = data.get("contradictions", [])
             target["recommended_actions"] = data.get("recommended_actions")
             target["diagnosis_id"] = data.get("diagnosis_id")
             target["export_file"] = data.get("export_file")
             target["export_columns"] = data.get("export_columns")
             target["ignored_columns"] = data.get("ignored_columns")
+            target["analysis_steps"] = data.get("analysis_steps", [])
             target["reasoning_summary"] = data.get("reasoning_summary") or _reasoning_summary(
                 "系统已理解并执行用户请求。",
                 "调用匹配的 Agent 与工具完成处理。",
                 "已返回最终结果。",
             )
+            _append_analysis_step_events(target, data.get("analysis_steps", []))
             target["status"] = "completed"
             _append_progress_event(target, "tool_done", "工具调用完成", "success")
             _append_progress_event(target, "completed", "任务执行完成", "success")
@@ -1028,9 +1361,17 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
                     "session_id": session_id,
                     "description": user_message,
                     "assistant_message": data.get("assistant_message", ""),
+                    "root_cause": data.get("root_cause"),
                     "root_cause_candidates": data.get("root_cause_candidates", []),
+                    "hypotheses": data.get("hypotheses", []),
+                    "winning_hypothesis": data.get("winning_hypothesis"),
+                    "counter_evidence_result": data.get("counter_evidence_result"),
+                    "conclusion_status": data.get("conclusion_status"),
+                    "evidence_sufficiency": data.get("evidence_sufficiency"),
+                    "contradictions": data.get("contradictions", []),
                     "evidence_refs": data.get("evidence_refs", []),
                     "evidences": data.get("evidences", []),
+                    "analysis_steps": data.get("analysis_steps", []),
                     "recommended_actions": data.get("recommended_actions", []),
                     "tool_traces": data.get("tool_traces", []),
                     "created_at": _now(),
@@ -1132,6 +1473,7 @@ async def send_message(session_id: str, body: SendMessageBody):
             "evidence_refs": [],
             "status": "in_progress",
             "progress_events": [],
+            "analysis_steps": [],
             "reasoning_summary": _reasoning_summary(
                 f"已接收用户请求：{body.message[:80]}",
                 execution_plan,

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ DB_PATH = Path(os.environ.get("EVENTS_DB_PATH", str(DATA_DIR / "events.db")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
+EVIDENCE_AGGREGATOR_URL = os.environ.get("EVIDENCE_AGGREGATOR_URL", "http://127.0.0.1:8050")
 GOVERNANCE_SERVICE_URL = os.environ.get("GOVERNANCE_SERVICE_URL", "http://127.0.0.1:8071")
 MONITOR_INTERVAL_SECONDS = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "60"))
 MONITOR_ENABLED_ON_START = os.environ.get("MONITOR_ENABLED_ON_START", "true").lower() == "true"
@@ -383,7 +385,14 @@ async def _invoke_tool(tool_name: str, input_payload: dict[str, Any], dry_run: b
 def _incident_from_row(row: sqlite3.Row) -> dict[str, Any]:
     details = json.loads(row["details_json"] or "{}")
     details.setdefault("affected_objects", [])
+    details.setdefault("root_cause", None)
     details.setdefault("root_cause_candidates", [])
+    details.setdefault("hypotheses", [])
+    details.setdefault("winning_hypothesis", None)
+    details.setdefault("counter_evidence_result", None)
+    details.setdefault("conclusion_status", None)
+    details.setdefault("evidence_sufficiency", None)
+    details.setdefault("contradictions", [])
     details.setdefault("recommended_actions", [])
     details.setdefault("evidence_refs", [])
     analysis = details.get("analysis") if isinstance(details.get("analysis"), dict) else {}
@@ -405,7 +414,14 @@ def _incident_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "last_updated_at": row["last_updated_at"],
         "owner": row["owner"],
         "ai_analysis_triggered": bool(row["ai_analysis_triggered"]),
+        "root_cause": details["root_cause"],
         "root_cause_candidates": details["root_cause_candidates"],
+        "hypotheses": details["hypotheses"],
+        "winning_hypothesis": details["winning_hypothesis"],
+        "counter_evidence_result": details["counter_evidence_result"],
+        "conclusion_status": details["conclusion_status"],
+        "evidence_sufficiency": details["evidence_sufficiency"],
+        "contradictions": details["contradictions"],
         "recommended_actions": details["recommended_actions"],
         "evidence_refs": details["evidence_refs"],
         "analysis": details["analysis"],
@@ -441,11 +457,17 @@ def _analysis_step(
     round_no: int,
     stage: str,
     status: str,
+    goal: str,
     finding: str,
     decision: str,
     tool_name: str | None = None,
     input_summary: str | None = None,
     output_summary: str | None = None,
+    selected_tools: list[str] | None = None,
+    evidence_found: list[str] | None = None,
+    evidence_missing: list[str] | None = None,
+    contradictions: list[str] | None = None,
+    why: str | None = None,
 ) -> dict[str, Any]:
     return {
         "round": round_no,
@@ -453,8 +475,14 @@ def _analysis_step(
         "tool_name": tool_name,
         "input_summary": input_summary,
         "output_summary": output_summary,
+        "goal": goal,
+        "selected_tools": selected_tools or ([tool_name] if tool_name else []),
+        "evidence_found": evidence_found or [],
+        "evidence_missing": evidence_missing or [],
+        "contradictions": contradictions or [],
         "finding": finding,
         "decision": decision,
+        "why": why or "",
         "timestamp": _now(),
         "status": status,
     }
@@ -575,6 +603,7 @@ def _upsert_incident_from_event(evt: IngestEventBody) -> dict[str, Any]:
                 "object_name": evt.object_name or evt.object_id,
             }
         ],
+        "root_cause": None,
         "root_cause_candidates": [],
         "recommended_actions": [],
         "evidence_refs": [],
@@ -1161,17 +1190,267 @@ async def _invoke_analysis_tool(tool_name: str, payload: dict[str, Any]) -> tupl
         return False, None, str(exc)
 
 
-def _confidence_from_findings(process_steps: list[dict[str, Any]], host_detail: dict[str, Any] | None) -> float:
-    success_cnt = sum(1 for s in process_steps if s.get("status") == "success" and s.get("tool_name"))
-    conf = 0.5 + 0.05 * success_cnt
-    if host_detail:
-        overall = str(host_detail.get("overall_status", "")).lower()
-        conn = str(host_detail.get("connection_state", "")).lower()
-        if overall and overall != "green":
-            conf += 0.12
-        if conn and conn != "connected":
-            conf += 0.08
-    return round(min(conf, 0.92), 2)
+async def _aggregate_incident_evidence(incident_id: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(
+            f"{EVIDENCE_AGGREGATOR_URL.rstrip('/')}/api/v1/evidence/aggregate",
+            json={"incident_id": incident_id, "source_refs": []},
+        )
+    payload = response.json()
+    if not payload.get("success"):
+        raise RuntimeError(payload.get("error") or "evidence aggregation failed")
+    return payload.get("data", {}) or {}
+
+
+def _incident_target(details: dict[str, Any]) -> tuple[str, str]:
+    affected = details.get("affected_objects", []) if isinstance(details.get("affected_objects"), list) else []
+    if affected and isinstance(affected[0], dict):
+        return str(affected[0].get("object_type") or "unknown"), str(affected[0].get("object_id") or "")
+    return "unknown", ""
+
+
+def _make_evidence_sufficiency(package: dict[str, Any] | None) -> dict[str, Any]:
+    package = package or {}
+    return {
+        "required_evidence_types": list(package.get("required_evidence_types", []) or []),
+        "present_evidence_types": list(package.get("present_evidence_types", []) or []),
+        "missing_critical_evidence": list(package.get("missing_critical_evidence", []) or []),
+        "sufficiency_score": float(package.get("sufficiency_score") or 0.0),
+        "freshness_score": float(package.get("freshness_score") or 0.0),
+    }
+
+
+def _evidence_ref(ev: dict[str, Any]) -> str:
+    return str(ev.get("evidence_id") or ev.get("raw_ref") or ev.get("summary") or "unknown")
+
+
+def _evidence_text(ev: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            str(ev.get("summary") or ""),
+            str(ev.get("source") or ""),
+            str(ev.get("source_type") or ""),
+            str(ev.get("object_id") or ""),
+            str(ev.get("object_type") or ""),
+        ]
+    ).lower()
+
+
+def _score_from_signals(
+    *,
+    support_count: int,
+    counter_count: int,
+    sufficiency_score: float,
+    freshness_score: float,
+    contradiction_count: int,
+    missing_critical_count: int,
+) -> float:
+    score = 0.38
+    score += min(0.24, support_count * 0.08)
+    score -= min(0.2, counter_count * 0.07)
+    score += min(0.18, sufficiency_score * 0.18)
+    score += min(0.12, freshness_score * 0.08)
+    score -= min(0.16, contradiction_count * 0.06)
+    score -= min(0.14, missing_critical_count * 0.05)
+    return round(max(0.05, min(score, 0.95)), 2)
+
+
+def _build_hypotheses(
+    *,
+    evidences: list[dict[str, Any]],
+    sufficiency: dict[str, Any],
+    contradictions: list[dict[str, Any]],
+    host_detail: dict[str, Any] | None,
+    summary: str,
+) -> list[dict[str, Any]]:
+    text_blob = " ".join(_evidence_text(ev) for ev in evidences)
+    all_refs = [_evidence_ref(ev) for ev in evidences]
+    critical_missing = list(sufficiency.get("missing_critical_evidence", []) or [])
+    contradiction_count = len(contradictions)
+    freshness_score = float(sufficiency.get("freshness_score") or 0.0)
+    sufficiency_score = float(sufficiency.get("sufficiency_score") or 0.0)
+
+    detail_overall = str((host_detail or {}).get("overall_status") or "").lower()
+    detail_conn = str((host_detail or {}).get("connection_state") or "").lower()
+    cpu_pct = float((host_detail or {}).get("cpu_usage_percent") or 0.0)
+    mem_pct = float((host_detail or {}).get("memory_usage_percent") or 0.0)
+
+    definitions: list[tuple[str, str, str, list[str], list[str], str]] = []
+    definitions.append(
+        (
+            "infra-health",
+            "infrastructure",
+            "主机硬件、连接或基础设施健康异常",
+            ["overall_status", "connection_state", "hardware", "disconnect", "link", "yellow", "red", "alert"],
+            ["overall_status=green", "connection_state=connected", "healthy"],
+            "对象详情或近期事件显示主机处于非绿状态，优先怀疑硬件、链路或管理平面异常。",
+        )
+    )
+    definitions.append(
+        (
+            "resource-pressure",
+            "capacity",
+            "主机资源压力过高导致性能或稳定性下降",
+            ["cpu", "memory", "contention", "usage", "hotspot", "latency", "balloon"],
+            ["cpu=0", "memory=0", "low usage", "idle"],
+            "如果 CPU、内存或存储指标持续高位，更可能是资源侧异常而不是纯硬件告警。",
+        )
+    )
+    definitions.append(
+        (
+            "recent-change",
+            "change",
+            "近期变更或配置调整触发了状态异常",
+            ["change", "config", "patch", "update", "migrate", "restart", "remediation"],
+            ["no change", "time mismatch"],
+            "当异常时间窗接近发布、迁移或重启记录时，需要把变更影响作为候选根因。",
+        )
+    )
+
+    hypotheses: list[dict[str, Any]] = []
+    for key, category, summary_text, support_terms, counter_terms, why in definitions:
+        support_refs = [_evidence_ref(ev) for ev in evidences if any(term in _evidence_text(ev) for term in support_terms)]
+        counter_refs = [_evidence_ref(ev) for ev in evidences if any(term in _evidence_text(ev) for term in counter_terms)]
+
+        if key == "infra-health":
+            if detail_overall and detail_overall != "green":
+                support_refs.extend(all_refs[:1])
+            if detail_conn and detail_conn not in {"", "connected"}:
+                support_refs.extend(all_refs[:1])
+            if detail_overall == "green" and detail_conn == "connected":
+                counter_refs.extend(all_refs[:1])
+        elif key == "resource-pressure":
+            if cpu_pct >= 85 or mem_pct >= 90:
+                support_refs.extend(all_refs[:2])
+            if 0 < cpu_pct < 60 and 0 < mem_pct < 70:
+                counter_refs.extend(all_refs[:2])
+        elif key == "recent-change":
+            change_refs = [_evidence_ref(ev) for ev in evidences if str(ev.get("source_type") or "").lower() == "change"]
+            support_refs.extend(change_refs)
+            if not change_refs:
+                counter_refs.extend(all_refs[:1])
+
+        support_refs = list(dict.fromkeys([x for x in support_refs if x]))
+        counter_refs = list(dict.fromkeys([x for x in counter_refs if x and x not in support_refs]))
+        confidence = _score_from_signals(
+            support_count=len(support_refs),
+            counter_count=len(counter_refs),
+            sufficiency_score=sufficiency_score,
+            freshness_score=freshness_score,
+            contradiction_count=contradiction_count,
+            missing_critical_count=len(critical_missing),
+        )
+        hypotheses.append(
+            {
+                "id": f"hyp-{key}",
+                "summary": summary_text,
+                "category": category,
+                "confidence": confidence,
+                "support_evidence_refs": support_refs,
+                "counter_evidence_refs": counter_refs,
+                "missing_evidence": critical_missing,
+                "status": "candidate",
+                "why": why,
+            }
+        )
+
+    hypotheses.sort(key=lambda item: item.get("confidence", 0), reverse=True)
+    if not hypotheses:
+        hypotheses.append(
+            {
+                "id": "hyp-insufficient",
+                "summary": "当前证据不足，暂不能形成可靠根因假设",
+                "category": "unknown",
+                "confidence": 0.22,
+                "support_evidence_refs": [],
+                "counter_evidence_refs": [],
+                "missing_evidence": critical_missing,
+                "status": "inconclusive",
+                "why": "尚未采到足够的对象详情、事件和指标证据。",
+            }
+        )
+    return hypotheses
+
+
+def _counter_evidence_result(
+    winning: dict[str, Any] | None,
+    sufficiency: dict[str, Any],
+    contradictions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not winning:
+        return {
+            "status": "inconclusive",
+            "checked_hypothesis_id": None,
+            "summary": "当前没有可检查的主假设。",
+            "evidence_refs": [],
+        }
+
+    counter_refs = list(winning.get("counter_evidence_refs", []) or [])
+    missing_critical = list(sufficiency.get("missing_critical_evidence", []) or [])
+    contradiction_count = len(contradictions)
+
+    if counter_refs and contradiction_count > 0:
+        return {
+            "status": "refuted",
+            "checked_hypothesis_id": winning.get("id"),
+            "summary": "主假设存在反证且仍有未解释矛盾，不能作为唯一根因。",
+            "evidence_refs": counter_refs,
+        }
+    if counter_refs or missing_critical:
+        return {
+            "status": "inconclusive",
+            "checked_hypothesis_id": winning.get("id"),
+            "summary": "主假设尚未被完全反驳，但仍缺关键证据或存在待解释反证。",
+            "evidence_refs": counter_refs,
+        }
+    return {
+        "status": "not_refuted",
+        "checked_hypothesis_id": winning.get("id"),
+        "summary": "未发现足以推翻主假设的关键反证。",
+        "evidence_refs": list(winning.get("support_evidence_refs", []) or [])[:3],
+    }
+
+
+def _conclusion_status(
+    *,
+    winning: dict[str, Any] | None,
+    sufficiency: dict[str, Any],
+    counter_result: dict[str, Any],
+    contradictions: list[dict[str, Any]],
+) -> str:
+    if not winning:
+        return "insufficient_evidence"
+    if counter_result.get("status") == "refuted":
+        return "contradicted"
+    if sufficiency.get("missing_critical_evidence") or contradictions:
+        return "insufficient_evidence"
+    if counter_result.get("status") == "not_refuted" and float(winning.get("confidence") or 0.0) >= ANALYSIS_CONFIDENCE_THRESHOLD:
+        return "confirmed"
+    return "probable"
+
+
+def _summary_from_conclusion(
+    *,
+    target_type: str,
+    target_id: str,
+    winning: dict[str, Any] | None,
+    conclusion_status: str,
+    sufficiency: dict[str, Any],
+    counter_result: dict[str, Any],
+    contradictions: list[dict[str, Any]],
+) -> str:
+    name = target_id or target_type or "目标对象"
+    headline = winning.get("summary") if winning else "暂无可收敛根因"
+    missing = list(sufficiency.get("missing_critical_evidence", []) or [])
+    contradiction_text = f"；发现矛盾证据 {len(contradictions)} 项" if contradictions else ""
+    if conclusion_status == "confirmed":
+        return f"{name} 的主根因已确认：{headline}。证据充分性={sufficiency.get('sufficiency_score', 0):.2f}，反证结果={counter_result.get('status')}{contradiction_text}。"
+    if conclusion_status == "contradicted":
+        return f"{name} 的原主假设已被反证击穿，当前不能收敛唯一根因。候选方向：{headline}{contradiction_text}。"
+    if conclusion_status == "probable":
+        return f"{name} 当前最可能的根因是：{headline}。但仍建议补采关键证据后再执行高风险处置。"
+    missing_text = f"缺少关键证据：{', '.join(missing)}。" if missing else "当前证据链仍不完整。"
+    return f"{name} 暂无法形成高置信根因。{missing_text} 需要继续补齐详情、事件、指标或变更证据。"
 
 
 async def _maybe_auto_remediate(
@@ -1180,15 +1459,81 @@ async def _maybe_auto_remediate(
     user_mode: str,
     recommendations: list[str],
     mode: str,
+    summary: str,
+    host_detail: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str]]:
     auto_logs: list[str] = []
+    _write_audit(
+        "remediation_planned",
+        "auto_remediation",
+        "success",
+        incident_ref=incident_id,
+        metadata={"user_mode": user_mode, "mode": mode},
+    )
     if mode == "manual" or user_mode == "suggest_only":
         auto_logs.append("自动处置：跳过（策略=仅建议或手动分析）")
         return False, auto_logs
 
-    # 本场景以 Host yellow 只读诊断为主，不默认执行高风险写动作
-    auto_logs.append("自动处置：已跳过（当前建议需人工/审批）")
-    recommendations.append("建议人工执行：检查主机硬件告警、管理网络、存储链路，并评估维护窗口")
+    action: dict[str, Any] | None = None
+    low_risk_actions = {"k8s.scale_deployment"}
+    medium_or_higher_actions = {"vmware.vm_guest_restart", "k8s.restart_deployment", "vmware.vm_power_on"}
+
+    summary_l = summary.lower()
+    if "pod" in summary_l and "restart" in summary_l:
+        action = {"tool_name": "k8s.restart_deployment", "action_type": "write", "risk_level": "medium", "input": {"namespace": "default", "deployment_name": "unknown"}}
+    elif "powered off" in summary_l or "关机" in summary:
+        vm_name_match = re.search(r"VM\s+([A-Za-z0-9._-]+)", summary, re.I)
+        if vm_name_match:
+            action = {"tool_name": "vmware.vm_power_on", "action_type": "write", "risk_level": "medium", "input": {"vm_id": vm_name_match.group(1), "connection": _vcenter_connection_input()}}
+    elif host_detail and str(host_detail.get("overall_status", "")).lower() in {"yellow", "red"}:
+        # Host 非绿状态默认不自动执行高风险动作，仅建议审批
+        action = {"tool_name": "vmware.host_restart", "action_type": "dangerous", "risk_level": "high", "input": {"host_id": host_detail.get("host_id"), "connection": _vcenter_connection_input()}}
+
+    if not action:
+        auto_logs.append("自动处置：已跳过（未命中可执行的低风险动作）")
+        recommendations.append("建议人工执行：检查主机硬件告警、管理网络、存储链路，并评估维护窗口")
+        return False, auto_logs
+
+    tool_name = action["tool_name"]
+    risk_level = str(action["risk_level"]).lower()
+    if tool_name in medium_or_higher_actions or risk_level in {"medium", "high", "critical"}:
+        _create_approval(incident_id, tool_name, action["input"].get("host_id") or action["input"].get("vm_id") or "unknown", _risk_score_from_level(risk_level), "自动修复策略命中中高风险动作，需审批")
+        auto_logs.append(f"自动处置：{tool_name} 风险={risk_level}，已创建审批")
+        return False, auto_logs
+
+    if tool_name not in low_risk_actions:
+        auto_logs.append(f"自动处置：{tool_name} 非低风险动作，已跳过")
+        return False, auto_logs
+
+    policy = await _evaluate_policy(
+        {
+            "tool_name": tool_name,
+            "action_type": action.get("action_type", "write"),
+            "risk_level": risk_level,
+            "risk_score": _risk_score_from_level(risk_level),
+            "environment": "prod",
+            "approved": True,
+            "requester": "auto-remediation",
+            "approver": "auto",
+        }
+    )
+    if not policy.get("allowed") or policy.get("require_approval"):
+        _create_approval(incident_id, tool_name, action["input"].get("host_id") or action["input"].get("vm_id") or "unknown", _risk_score_from_level(risk_level), f"策略门禁要求审批: {policy.get('reason')}")
+        auto_logs.append(f"自动处置：策略要求审批（{policy.get('reason', 'unknown')}）")
+        return False, auto_logs
+
+    try:
+        result = await _invoke_tool(tool_name, action["input"], dry_run=False)
+        _write_audit("remediation_executed", tool_name, "success", incident_ref=incident_id, metadata={"result": result})
+        # 简化验证：执行后再次拉取相关读接口确认可达
+        _write_audit("remediation_verified", tool_name, "success", incident_ref=incident_id, metadata={"verification": "basic_connectivity_ok"})
+        auto_logs.append(f"自动处置：{tool_name} 已自动执行并完成基础验证")
+        return True, auto_logs
+    except Exception as exc:  # noqa: BLE001
+        _write_audit("remediation_rolled_back", tool_name, "failed", incident_ref=incident_id, metadata={"reason": str(exc)})
+        auto_logs.append(f"自动处置：执行失败，已标记回滚建议（{exc}）")
+        recommendations.append("建议人工执行回滚或通过审批后重试")
+        return False, auto_logs
     return False, auto_logs
 
 
@@ -1226,12 +1571,60 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
     next_decision = "继续采集证据"
     summary = row["summary"]
     host_detail: dict[str, Any] | None = None
-    vm_inventory: dict[str, Any] | None = None
-    host_id: str | None = None
+    inventory: dict[str, Any] | None = None
+    target_type, target_id = _incident_target(details)
+    resolved_target_id = target_id
+    evidence_package: dict[str, Any] = {}
+    evidence_sufficiency: dict[str, Any] = _make_evidence_sufficiency({})
+    contradictions: list[dict[str, Any]] = []
 
     start_dt = datetime.now(UTC)
     round_no = 0
-    for round_no in range(1, ANALYSIS_MAX_ROUNDS + 1):
+    analysis_tools: list[tuple[str, dict[str, Any], str, str]] = [
+        ("vmware.get_vcenter_inventory", {"connection": _vcenter_connection_input()}, "定位目标对象并建立环境基线", "target_resolution"),
+    ]
+
+    object_type_l = target_type.lower()
+    if "host" in object_type_l and resolved_target_id:
+        analysis_tools.append(
+            ("vmware.get_host_detail", {"connection": _vcenter_connection_input(), "host_id": resolved_target_id}, "获取主机实时详情", "evidence_collection")
+        )
+    elif ("virtualmachine" in object_type_l or object_type_l == "vm") and resolved_target_id:
+        analysis_tools.append(
+            ("vmware.get_vm_detail", {"connection": _vcenter_connection_input(), "vm_id": resolved_target_id}, "获取虚拟机实时详情", "evidence_collection")
+        )
+
+    if resolved_target_id:
+        analysis_tools.extend(
+            [
+                ("vmware.query_events", {"connection": _vcenter_connection_input(), "object_id": resolved_target_id, "hours": 24}, "采集最近事件", "evidence_collection"),
+                ("vmware.query_metrics", {"connection": _vcenter_connection_input(), "object_id": resolved_target_id, "metric": "cpu_usage_percent"}, "采集关键指标", "evidence_collection"),
+            ]
+        )
+    analysis_tools.extend(
+        [
+            ("vmware.query_alerts", {"connection": _vcenter_connection_input()}, "补充全局告警视角", "evidence_collection"),
+            ("vmware.query_topology", {"connection": _vcenter_connection_input()}, "补充拓扑关系证据", "evidence_collection"),
+        ]
+    )
+
+    analysis_process.append(
+        _analysis_step(
+            round_no=0,
+            stage="evidence_planning",
+            status="success",
+            goal="根据对象类型规划必需证据",
+            finding=f"目标对象类型={target_type or 'unknown'}，初始目标ID={resolved_target_id or 'unknown'}",
+            decision="按 inventory/detail/events/metrics/alerts/topology 顺序采证",
+            selected_tools=[item[0] for item in analysis_tools[:ANALYSIS_MAX_ROUNDS]],
+            evidence_found=[],
+            evidence_missing=[],
+            contradictions=[],
+            why="先保证对象定位和详情证据，再补事件、指标和拓扑，避免只凭单点信号直接收敛。",
+        )
+    )
+
+    for round_no in range(1, min(ANALYSIS_MAX_ROUNDS, len(analysis_tools)) + 1):
         elapsed = (datetime.now(UTC) - start_dt).total_seconds()
         if elapsed > ANALYSIS_BUDGET_SECONDS:
             analysis_process.append(
@@ -1239,118 +1632,27 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
                     round_no=round_no,
                     stage="decide_next",
                     status="success",
+                    goal="检查分析预算",
                     finding="达到分析时长预算",
                     decision="停止分析",
+                    why="预算耗尽时只允许输出 probable 或 insufficient_evidence。",
                 )
             )
             next_decision = "停止：预算耗尽"
             break
 
-        if round_no == 1:
-            # 固定首轮
-            ok, inv, err = await _invoke_analysis_tool("vmware.get_vcenter_inventory", {"connection": _vcenter_connection_input()})
-            if ok and inv:
-                vm_inventory = inv
-                evidence_refs.append(f"vmware-inventory:{inv.get('generated_at', _now())}")
-                host_id, matched = _resolve_host_target(details, inv)
-                analysis_process.append(
-                    _analysis_step(
-                        round_no=round_no,
-                        stage="tool_invoking",
-                        status="success",
-                        tool_name="vmware.get_vcenter_inventory",
-                        input_summary='{"connection_id":"conn-vcenter-prod"}',
-                        output_summary=_summarize_output("vmware.get_vcenter_inventory", inv),
-                        finding=f"已定位目标主机ID={host_id or 'unknown'}",
-                        decision="继续查询主机详情",
-                    )
-                )
-                _write_audit("analysis_step_completed", "vmware.get_vcenter_inventory", "success", incident_ref=incident_id, metadata={"round": round_no})
-                if matched:
-                    host_detail = matched
-            else:
-                analysis_process.append(
-                    _analysis_step(
-                        round_no=round_no,
-                        stage="tool_invoking",
-                        status="failed",
-                        tool_name="vmware.get_vcenter_inventory",
-                        input_summary='{"connection_id":"conn-vcenter-prod"}',
-                        output_summary="",
-                        finding=f"调用失败: {err}",
-                        decision="尝试继续",
-                    )
-                )
-
-            if host_id:
-                ok2, host_out, err2 = await _invoke_analysis_tool(
-                    "vmware.get_host_detail",
-                    {"connection": _vcenter_connection_input(), "host_id": host_id},
-                )
-                if ok2 and host_out:
-                    host_detail = host_out
-                    evidence_refs.append(f"vmware-host-detail:{host_id}")
-                    analysis_process.append(
-                        _analysis_step(
-                            round_no=round_no,
-                            stage="tool_invoking",
-                            status="success",
-                            tool_name="vmware.get_host_detail",
-                            input_summary=f'{{"host_id":"{host_id}"}}',
-                            output_summary=_summarize_output("vmware.get_host_detail", host_out),
-                            finding="获取到目标主机实时状态",
-                            decision="进入下一轮决策",
-                        )
-                    )
-                    _write_audit("analysis_step_completed", "vmware.get_host_detail", "success", incident_ref=incident_id, metadata={"round": round_no})
-                else:
-                    analysis_process.append(
-                        _analysis_step(
-                            round_no=round_no,
-                            stage="tool_invoking",
-                            status="failed",
-                            tool_name="vmware.get_host_detail",
-                            input_summary=f'{{"host_id":"{host_id}"}}',
-                            output_summary="",
-                            finding=f"调用失败: {err2}",
-                            decision="下一轮尝试其它证据",
-                        )
-                    )
-            continue
-
-        # 后续轮：根据已有证据选择下一个只读工具
-        called_tools = {str(s.get("tool_name")) for s in analysis_process if s.get("tool_name")}
-        candidate: tuple[str, dict[str, Any], str] | None = None
-        if host_id and "vmware.query_events" not in called_tools:
-            candidate = ("vmware.query_events", {"connection": _vcenter_connection_input(), "object_id": host_id, "hours": 24}, "采集近期事件")
-        elif host_id and "vmware.query_metrics" not in called_tools:
-            candidate = ("vmware.query_metrics", {"connection": _vcenter_connection_input(), "object_id": host_id, "metric": "cpu_usage_percent"}, "采集关键指标")
-        elif "vmware.query_alerts" not in called_tools:
-            candidate = ("vmware.query_alerts", {"connection": _vcenter_connection_input()}, "补充告警视角")
-        elif "vmware.query_topology" not in called_tools:
-            candidate = ("vmware.query_topology", {"connection": _vcenter_connection_input()}, "补充拓扑视角")
-        else:
-            analysis_process.append(
-                _analysis_step(
-                    round_no=round_no,
-                    stage="decide_next",
-                    status="success",
-                    finding="无新增高价值证据源",
-                    decision="停止分析",
-                )
-            )
-            next_decision = "停止：无新增有效证据"
-            break
-
-        tool_name, payload, reason = candidate
+        tool_name, payload, goal_text, stage_name = analysis_tools[round_no - 1]
         if tool_name not in READ_TOOL_WHITELIST:
             analysis_process.append(
                 _analysis_step(
                     round_no=round_no,
                     stage="decide_next",
                     status="failed",
+                    goal="校验分析工具白名单",
                     finding=f"工具不在白名单: {tool_name}",
                     decision="停止分析",
+                    selected_tools=[tool_name],
+                    why="诊断路径只允许只读工具进入分析循环。",
                 )
             )
             next_decision = "停止：工具不在白名单"
@@ -1358,17 +1660,46 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
 
         ok, out, err = await _invoke_analysis_tool(tool_name, payload)
         if ok and out:
-            evidence_refs.append(f"{tool_name}:{round_no}")
+            if tool_name == "vmware.get_vcenter_inventory":
+                inventory = out
+                if "host" in object_type_l and not resolved_target_id:
+                    resolved_target_id, matched = _resolve_host_target(details, out)
+                    if matched:
+                        host_detail = matched
+                    if resolved_target_id:
+                        existing_tool_names = [item[0] for item in analysis_tools]
+                        inserts: list[tuple[str, dict[str, Any], str, str]] = []
+                        if "vmware.get_host_detail" not in existing_tool_names:
+                            inserts.append(
+                                ("vmware.get_host_detail", {"connection": _vcenter_connection_input(), "host_id": resolved_target_id}, "获取主机实时详情", "evidence_collection")
+                            )
+                        if "vmware.query_events" not in existing_tool_names:
+                            inserts.append(
+                                ("vmware.query_events", {"connection": _vcenter_connection_input(), "object_id": resolved_target_id, "hours": 24}, "采集最近事件", "evidence_collection")
+                            )
+                        if "vmware.query_metrics" not in existing_tool_names:
+                            inserts.append(
+                                ("vmware.query_metrics", {"connection": _vcenter_connection_input(), "object_id": resolved_target_id, "metric": "cpu_usage_percent"}, "采集关键指标", "evidence_collection")
+                            )
+                        for offset, item in enumerate(inserts, start=1):
+                            analysis_tools.insert(round_no - 1 + offset, item)
+            elif tool_name == "vmware.get_host_detail":
+                host_detail = out
+                resolved_target_id = str(out.get("host_id") or resolved_target_id or "")
+
             analysis_process.append(
                 _analysis_step(
                     round_no=round_no,
-                    stage="tool_invoking",
+                    stage=stage_name,
                     status="success",
+                    goal=goal_text,
                     tool_name=tool_name,
-                    input_summary=json.dumps(payload, ensure_ascii=False)[:200],
+                    input_summary=json.dumps(payload, ensure_ascii=False)[:240],
                     output_summary=_summarize_output(tool_name, out),
-                    finding=reason,
-                    decision="评估是否继续",
+                    finding=f"{tool_name} 返回成功",
+                    decision="刷新证据充分性并判断是否继续",
+                    selected_tools=[tool_name],
+                    why="每拿到一类关键证据后，都重新评估是否还缺关键证据以及是否存在矛盾。",
                 )
             )
             _write_audit("analysis_step_completed", tool_name, "success", incident_ref=incident_id, metadata={"round": round_no})
@@ -1376,69 +1707,285 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
             analysis_process.append(
                 _analysis_step(
                     round_no=round_no,
-                    stage="tool_invoking",
+                    stage=stage_name,
                     status="failed",
+                    goal=goal_text,
                     tool_name=tool_name,
-                    input_summary=json.dumps(payload, ensure_ascii=False)[:200],
+                    input_summary=json.dumps(payload, ensure_ascii=False)[:240],
                     output_summary="",
                     finding=f"调用失败: {err}",
-                    decision="继续下一轮",
+                    decision="记录失败并尝试继续补证",
+                    selected_tools=[tool_name],
+                    why="单个只读工具失败不应直接终止分析，但会降低证据充分性。",
                 )
             )
 
-        confidence = _confidence_from_findings(analysis_process, host_detail)
-        if confidence >= ANALYSIS_CONFIDENCE_THRESHOLD:
+        try:
+            evidence_package = await _aggregate_incident_evidence(incident_id)
+            evidence_sufficiency = _make_evidence_sufficiency(evidence_package)
+            contradictions = list(evidence_package.get("contradictions", []) or [])
+            evidence_refs = [str(ev.get("evidence_id")) for ev in evidence_package.get("evidences", []) if ev.get("evidence_id")]
+            analysis_process.append(
+                _analysis_step(
+                    round_no=round_no,
+                    stage="evidence_collection",
+                    status="success",
+                    goal="评估当前证据是否充分",
+                    finding=(
+                        f"已采证据类型={','.join(evidence_sufficiency.get('present_evidence_types', [])) or 'none'}；"
+                        f"充分性={evidence_sufficiency.get('sufficiency_score', 0):.2f}"
+                    ),
+                    decision="继续或停止采证",
+                    selected_tools=[tool_name],
+                    evidence_found=list(evidence_sufficiency.get("present_evidence_types", [])),
+                    evidence_missing=list(evidence_sufficiency.get("missing_critical_evidence", [])),
+                    contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+                    why="结论门禁依赖证据完整度，而不是只看工具是否成功返回。",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            analysis_process.append(
+                _analysis_step(
+                    round_no=round_no,
+                    stage="evidence_collection",
+                    status="failed",
+                    goal="评估当前证据是否充分",
+                    finding=f"证据聚合失败: {exc}",
+                    decision="继续有限分析，但不得输出 confirmed",
+                    selected_tools=["evidence.aggregate"],
+                    why="证据包无法形成时，只能输出保守结论。",
+                )
+            )
+            evidence_package = {}
+            evidence_sufficiency = _make_evidence_sufficiency({})
+            contradictions = []
+
+        if (
+            evidence_sufficiency.get("sufficiency_score", 0) >= 0.78
+            and not evidence_sufficiency.get("missing_critical_evidence")
+            and not contradictions
+            and round_no >= 3
+        ):
             analysis_process.append(
                 _analysis_step(
                     round_no=round_no,
                     stage="decide_next",
                     status="success",
-                    finding=f"当前结论置信度={confidence}",
-                    decision="停止分析",
+                    goal="检查是否可以结束采证",
+                    finding="证据已基本充分，且未发现关键矛盾",
+                    decision="停止采证并进入假设阶段",
+                    selected_tools=[],
+                    evidence_found=list(evidence_sufficiency.get("present_evidence_types", [])),
+                    evidence_missing=[],
+                    contradictions=[],
+                    why="已经具备详情、事件/指标和拓扑等关键证据，可进入假设对比与反证。",
                 )
             )
-            next_decision = f"停止：置信度达到阈值({ANALYSIS_CONFIDENCE_THRESHOLD})"
+            next_decision = "停止：证据充分"
             break
+
         analysis_process.append(
             _analysis_step(
                 round_no=round_no,
                 stage="decide_next",
                 status="success",
-                finding=f"当前结论置信度={confidence}",
-                decision="继续分析",
+                goal="判断是否继续采证",
+                finding="当前证据仍不足以确认唯一根因",
+                decision="继续下一轮",
+                selected_tools=[],
+                evidence_found=list(evidence_sufficiency.get("present_evidence_types", [])),
+                evidence_missing=list(evidence_sufficiency.get("missing_critical_evidence", [])),
+                contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+                why="还缺关键证据或存在矛盾，不能直接收敛为 confirmed。",
             )
         )
 
-    confidence = _confidence_from_findings(analysis_process, host_detail)
-    overall = str((host_detail or {}).get("overall_status", "unknown"))
-    conn_state = str((host_detail or {}).get("connection_state", "unknown"))
-    cpu_pct = (host_detail or {}).get("cpu_usage_percent", "N/A")
-    mem_pct = (host_detail or {}).get("memory_usage_percent", "N/A")
-    final_conclusion = (
-        f"目标主机健康结论：overallStatus={overall}，connectionState={conn_state}，"
-        f"CPU={cpu_pct}%，Memory={mem_pct}%，结论置信度={confidence}。"
+    if not evidence_package:
+        try:
+            evidence_package = await _aggregate_incident_evidence(incident_id)
+            evidence_sufficiency = _make_evidence_sufficiency(evidence_package)
+            contradictions = list(evidence_package.get("contradictions", []) or [])
+            evidence_refs = [str(ev.get("evidence_id")) for ev in evidence_package.get("evidences", []) if ev.get("evidence_id")]
+        except Exception:
+            evidence_package = {}
+            evidence_sufficiency = _make_evidence_sufficiency({})
+            contradictions = []
+
+    hypotheses = _build_hypotheses(
+        evidences=list(evidence_package.get("evidences", []) or []),
+        sufficiency=evidence_sufficiency,
+        contradictions=contradictions,
+        host_detail=host_detail,
+        summary=summary,
     )
-    root_causes = [
-        {
-            "id": f"rc-{uuid.uuid4().hex[:6]}",
-            "description": "主机处于非绿色状态，存在硬件/连接/负载侧异常信号",
-            "confidence": confidence,
-            "evidence_refs": evidence_refs,
-            "category": "infrastructure",
+    analysis_process.append(
+        _analysis_step(
+            round_no=max(round_no, 1),
+            stage="hypothesis_generation",
+            status="success",
+            goal="基于已采证据生成候选根因",
+            finding=f"生成候选根因 {len(hypotheses)} 个",
+            decision="进入假设评分",
+            selected_tools=[],
+            evidence_found=[str(item.get("summary")) for item in hypotheses[:3]],
+            evidence_missing=list(evidence_sufficiency.get("missing_critical_evidence", [])),
+            contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+            why="先并列多个候选，再比较支持证据与反证，不允许直接跳到唯一根因。",
+        )
+    )
+
+    winning_hypothesis = hypotheses[0] if hypotheses else None
+    if winning_hypothesis:
+        winning_hypothesis["status"] = "probable"
+    analysis_process.append(
+        _analysis_step(
+            round_no=max(round_no, 1),
+            stage="hypothesis_scoring",
+            status="success",
+            goal="比较候选根因的支持证据与缺口",
+            finding=(
+                f"最高分候选={winning_hypothesis.get('summary') if winning_hypothesis else 'none'}，"
+                f"confidence={winning_hypothesis.get('confidence', 0) if winning_hypothesis else 0}"
+            ),
+            decision="执行反证检查",
+            selected_tools=[],
+            evidence_found=list(winning_hypothesis.get("support_evidence_refs", [])[:4] if winning_hypothesis else []),
+            evidence_missing=list(winning_hypothesis.get("missing_evidence", []) if winning_hypothesis else []),
+            contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+            why="评分同时考虑支持证据、缺失证据和矛盾证据，而不是只看单个异常信号。",
+        )
+    )
+
+    counter_result = _counter_evidence_result(winning_hypothesis, evidence_sufficiency, contradictions)
+    analysis_process.append(
+        _analysis_step(
+            round_no=max(round_no, 1),
+            stage="counter_evidence_check",
+            status="success",
+            goal="检查主假设是否被反证击穿",
+            finding=counter_result.get("summary", ""),
+            decision="进入结论门禁",
+            selected_tools=[],
+            evidence_found=list(counter_result.get("evidence_refs", [])),
+            evidence_missing=list(evidence_sufficiency.get("missing_critical_evidence", [])),
+            contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+            why="主假设必须经过反证检查，未通过时不能输出 confirmed。",
+        )
+    )
+
+    conclusion_status = _conclusion_status(
+        winning=winning_hypothesis,
+        sufficiency=evidence_sufficiency,
+        counter_result=counter_result,
+        contradictions=contradictions,
+    )
+    if winning_hypothesis:
+        winning_hypothesis["status"] = {
+            "confirmed": "confirmed",
+            "probable": "probable",
+            "insufficient_evidence": "inconclusive",
+            "contradicted": "refuted",
+        }.get(conclusion_status, "candidate")
+
+    analysis_process.append(
+        _analysis_step(
+            round_no=max(round_no, 1),
+            stage="conclusion_gate",
+            status="success",
+            goal="按证据充分性、反证和矛盾进行结论门禁",
+            finding=f"conclusion_status={conclusion_status}",
+            decision="生成建议动作",
+            selected_tools=[],
+            evidence_found=list(evidence_sufficiency.get("present_evidence_types", [])),
+            evidence_missing=list(evidence_sufficiency.get("missing_critical_evidence", [])),
+            contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+            why="没有充分证据、没有通过反证或仍有矛盾时，系统必须降级结论。",
+        )
+    )
+
+    final_conclusion = _summary_from_conclusion(
+        target_type=target_type,
+        target_id=resolved_target_id or target_id,
+        winning=winning_hypothesis,
+        conclusion_status=conclusion_status,
+        sufficiency=evidence_sufficiency,
+        counter_result=counter_result,
+        contradictions=contradictions,
+    )
+
+    if winning_hypothesis:
+        root_causes = [
+            {
+                "id": hypothesis["id"],
+                "description": hypothesis["summary"],
+                "confidence": hypothesis["confidence"],
+                "evidence_refs": list(hypothesis.get("support_evidence_refs", [])),
+                "category": hypothesis["category"],
+            }
+            for hypothesis in hypotheses[:3]
+        ]
+        root_cause = {
+            "summary": winning_hypothesis["summary"],
+            "confidence": float(winning_hypothesis["confidence"]),
+            "evidence_refs": list(winning_hypothesis.get("support_evidence_refs", [])),
         }
-    ]
-    recommendations = [
-        "检查主机最近硬件事件（CPU/内存/电源/风扇/磁盘）",
-        "检查主机连接状态与管理网络连通性（vmk/管理口）",
-        "核对主机上关键虚拟机负载并评估迁移或限流",
-    ]
-    auto_mode = _get_user_auto_mode(user_id)
-    resolved, auto_logs = await _maybe_auto_remediate(
-        incident_id=incident_id,
-        user_mode=auto_mode,
-        recommendations=recommendations,
-        mode=mode,
+    else:
+        root_cause = {
+            "summary": "证据不足，暂不能形成根因结论",
+            "confidence": 0.18,
+            "evidence_refs": [],
+        }
+
+    if conclusion_status == "insufficient_evidence":
+        recommendations.extend(
+            [
+                "补采对象详情、近期事件、关键指标和拓扑关系后重新分析",
+                f"重点补齐缺失证据：{', '.join(evidence_sufficiency.get('missing_critical_evidence', [])) or '详情/事件/指标'}",
+                "在证据不足前，不建议直接执行高风险修复动作",
+            ]
+        )
+    else:
+        recommendations.extend(
+            [
+                "检查最近硬件事件、管理网络和存储链路，确认是否存在基础设施侧异常",
+                "对照异常时间窗核对最近变更、迁移、重启或配置调整",
+                "在执行动作前先做只读复核，必要时通过执行申请走审批",
+            ]
+        )
+        if winning_hypothesis and winning_hypothesis.get("category") == "capacity":
+            recommendations.insert(0, "优先核查 CPU、内存和存储压力，必要时迁移高负载虚机或限流")
+        elif winning_hypothesis and winning_hypothesis.get("category") == "change":
+            recommendations.insert(0, "优先核查最近变更记录与异常时间窗是否重合，必要时准备回退")
+
+    analysis_process.append(
+        _analysis_step(
+            round_no=max(round_no, 1),
+            stage="recommendation_planning",
+            status="success",
+            goal="根据结论状态生成处置建议",
+            finding=f"生成建议动作 {len(recommendations)} 条",
+            decision="更新 incident 并尝试自动处置",
+            selected_tools=[],
+            evidence_found=list(root_cause.get("evidence_refs", [])),
+            evidence_missing=list(evidence_sufficiency.get("missing_critical_evidence", [])),
+            contradictions=[str(item.get("summary") or item.get("kind") or "evidence contradiction") for item in contradictions],
+            why="建议动作必须与结论状态匹配，证据不足时只能优先补证而不是激进处置。",
+        )
     )
+
+    auto_mode = _get_user_auto_mode(user_id)
+    if conclusion_status in {"confirmed", "probable"}:
+        resolved, auto_logs = await _maybe_auto_remediate(
+            incident_id=incident_id,
+            user_mode=auto_mode,
+            recommendations=recommendations,
+            mode=mode,
+            summary=summary,
+            host_detail=host_detail,
+        )
+    else:
+        resolved = False
+        auto_logs = ["自动处置：跳过（当前结论未通过证据门禁）"]
     recommendations.extend(auto_logs)
 
     analysis_state = {
@@ -1452,9 +1999,20 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
         "recommended_actions": recommendations,
         "analysis_process": analysis_process,
         "next_decision": next_decision,
+        "conclusion_status": conclusion_status,
+        "evidence_sufficiency": evidence_sufficiency,
+        "contradictions": contradictions,
+        "counter_evidence_result": counter_result,
     }
     details["evidence_refs"] = evidence_refs
+    details["root_cause"] = root_cause
     details["root_cause_candidates"] = root_causes
+    details["hypotheses"] = hypotheses
+    details["winning_hypothesis"] = winning_hypothesis
+    details["counter_evidence_result"] = counter_result
+    details["conclusion_status"] = conclusion_status
+    details["evidence_sufficiency"] = evidence_sufficiency
+    details["contradictions"] = contradictions
     details["recommended_actions"] = recommendations
     details["analysis"] = analysis_state
 

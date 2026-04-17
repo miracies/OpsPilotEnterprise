@@ -50,9 +50,56 @@ export interface ChatMessage {
   timestamp: string;
   tool_traces?: ToolTrace[];
   evidence_refs?: string[];
+  root_cause?: {
+    summary: string;
+    confidence: number;
+    evidence_refs: string[];
+  };
   root_cause_candidates?: Array<{
     description: string;
     confidence: number;
+  }>;
+  hypotheses?: Array<{
+    id: string;
+    summary: string;
+    category: string;
+    confidence: number;
+    support_evidence_refs: string[];
+    counter_evidence_refs: string[];
+    missing_evidence: string[];
+    status: "candidate" | "confirmed" | "probable" | "refuted" | "inconclusive";
+    why: string;
+  }>;
+  winning_hypothesis?: {
+    id: string;
+    summary: string;
+    category: string;
+    confidence: number;
+    support_evidence_refs: string[];
+    counter_evidence_refs: string[];
+    missing_evidence: string[];
+    status: "candidate" | "confirmed" | "probable" | "refuted" | "inconclusive";
+    why: string;
+  };
+  counter_evidence_result?: {
+    status: "refuted" | "not_refuted" | "inconclusive";
+    checked_hypothesis_id?: string | null;
+    summary: string;
+    evidence_refs: string[];
+  };
+  conclusion_status?: "confirmed" | "probable" | "insufficient_evidence" | "contradicted";
+  evidence_sufficiency?: {
+    required_evidence_types: string[];
+    present_evidence_types: string[];
+    missing_critical_evidence: string[];
+    sufficiency_score: number;
+    freshness_score: number;
+  };
+  contradictions?: Array<{
+    type: string;
+    summary: string;
+    evidence_refs: string[];
+    severity: "high" | "medium" | "low";
   }>;
   recommended_actions?: string[];
   agent_name?: string;
@@ -73,4 +120,12 @@ export interface ChatMessage {
   status?: "in_progress" | "completed" | "failed";
   progress_events?: ProgressEvent[];
   reasoning_summary?: ReasoningSummary;
+  analysis_steps?: Array<{
+    agent: string;
+    stage?: string;
+    status: "success" | "failed" | "warning" | "in_progress";
+    started_at: string;
+    finished_at?: string;
+    summary: string;
+  }>;
 }

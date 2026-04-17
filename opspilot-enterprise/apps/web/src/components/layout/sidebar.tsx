@@ -25,6 +25,7 @@ import {
   KeyRound,
   Server,
   Boxes,
+  Network,
 } from "lucide-react";
 
 const navGroups = [
@@ -67,6 +68,7 @@ const navGroups = [
       { href: "/secrets", label: "密钥管理", icon: KeyRound },
       { href: "/resources/vcenter", label: "vCenter 资源", icon: Server },
       { href: "/resources/k8s", label: "K8s 资源", icon: Boxes },
+      { href: "/topology", label: "拓扑视图", icon: Network },
       { href: "/knowledge", label: "知识管理", icon: BookOpen },
       { href: "/policies", label: "策略管理", icon: Lock },
       { href: "/agents", label: "Agent 视图", icon: Bot },

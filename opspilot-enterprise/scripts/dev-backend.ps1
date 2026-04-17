@@ -12,6 +12,7 @@ $services = @(
     @{ Name = "vmware-skill-gateway";   Port = 8030; Path = "$root\services\vmware-skill-gateway" },
     @{ Name = "change-impact-service";  Port = 8040; Path = "$root\services\change-impact-service" },
     @{ Name = "evidence-aggregator";    Port = 8050; Path = "$root\services\evidence-aggregator" },
+    @{ Name = "topology-service";      Port = 8090; Path = "$root\services\topology-service" },
     @{ Name = "event-ingestion-service"; Port = 8060; Path = "$root\services\event-ingestion-service" },
     @{ Name = "langgraph-orchestrator"; Port = 8010; Path = "$root\services\langgraph-orchestrator" },
     @{ Name = "api-bff";               Port = 8000; Path = "$root\apps\api-bff" }

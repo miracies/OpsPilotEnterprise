@@ -49,6 +49,26 @@ type ChangeImpactResponse = {
       type: string;
       children: Array<{ id: string; name: string; type: string }>;
     }>;
+    evidence_sufficiency?: {
+      required_evidence_types: string[];
+      present_evidence_types: string[];
+      missing_critical_evidence: string[];
+      sufficiency_score: number;
+      freshness_score: number;
+    };
+    conclusion_status?: "confirmed" | "probable" | "insufficient_evidence" | "contradicted";
+    counter_evidence_result?: {
+      status: "refuted" | "not_refuted" | "inconclusive";
+      checked_hypothesis_id?: string | null;
+      summary: string;
+      evidence_refs: string[];
+    };
+    hypotheses?: Array<{
+      summary: string;
+      category: string;
+      confidence: number;
+      missing_evidence?: string[];
+    }>;
   };
   error?: string;
 };
@@ -211,6 +231,61 @@ export default function ChangeImpactPage() {
               </div>
             </CardContent>
           </Card>
+
+          {(result.conclusion_status || result.evidence_sufficiency || (result.hypotheses && result.hypotheses.length > 0)) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4 text-slate-600" />
+                  分析约束与证据门禁
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-slate-700">
+                {result.conclusion_status && (
+                  <div>
+                    <span className="font-medium text-slate-500">结论状态：</span>
+                    {result.conclusion_status}
+                  </div>
+                )}
+                {result.evidence_sufficiency && (
+                  <>
+                    <div>
+                      <span className="font-medium text-slate-500">证据充分性：</span>
+                      {(result.evidence_sufficiency.sufficiency_score ?? 0).toFixed(2)}
+                      {" / "}
+                      新鲜度 {(result.evidence_sufficiency.freshness_score ?? 0).toFixed(2)}
+                    </div>
+                    {result.evidence_sufficiency.missing_critical_evidence.length > 0 && (
+                      <div className="text-amber-700">
+                        缺失关键证据：{result.evidence_sufficiency.missing_critical_evidence.join("、")}
+                      </div>
+                    )}
+                  </>
+                )}
+                {result.counter_evidence_result && (
+                  <div>
+                    <span className="font-medium text-slate-500">反证结果：</span>
+                    {result.counter_evidence_result.status}，{result.counter_evidence_result.summary}
+                  </div>
+                )}
+                {result.hypotheses && result.hypotheses.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="font-medium text-slate-500">候选影响假设</div>
+                    {result.hypotheses.slice(0, 3).map((item, index) => (
+                      <div key={`${item.category}-${index}`} className="rounded border bg-slate-50 p-2">
+                        <div className="font-medium text-slate-900">
+                          {item.summary} ({(item.confidence ?? 0).toFixed(2)})
+                        </div>
+                        {item.missing_evidence && item.missing_evidence.length > 0 && (
+                          <div className="text-xs text-amber-700">缺口：{item.missing_evidence.join("、")}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card>

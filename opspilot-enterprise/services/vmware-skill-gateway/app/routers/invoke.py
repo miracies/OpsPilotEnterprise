@@ -25,6 +25,62 @@ async def invoke(tool_name: str, body: InvokeBody) -> dict:
         return val
 
     try:
+        if tool_name == "vmware.vm.power":
+            vm_id = str(_required("vm_id"))
+            action = str(_required("action")).lower()
+            if action in {"on", "power_on", "start"}:
+                return await execute.vm_power_on(
+                    execute.VmIdOnlyBody(
+                        vm_id=vm_id,
+                        dry_run=body.dry_run or body.input.get("dry_run", False),
+                        connection=body.input.get("connection"),
+                    )
+                )
+            if action in {"off", "power_off", "stop"}:
+                return await execute.vm_power_off(
+                    execute.VmIdOnlyBody(
+                        vm_id=vm_id,
+                        dry_run=body.dry_run or body.input.get("dry_run", False),
+                        connection=body.input.get("connection"),
+                    )
+                )
+            return make_error("unsupported action for vmware.vm.power, expected on/off")
+        if tool_name == "vmware.vm.create":
+            return make_error("not_supported: vmware.vm.create is not implemented in this release")
+        if tool_name == "vmware.vm.delete":
+            return make_error("not_supported: vmware.vm.delete is not implemented in this release")
+        if tool_name == "vmware.vm.migrate":
+            return execute.vm_migrate(
+                execute.VmMigrateBody(
+                    vm_id=str(_required("vm_id")),
+                    target_host_id=str(_required("target_host_id")),
+                    dry_run=body.dry_run or body.input.get("dry_run", False),
+                )
+            )
+        if tool_name == "vmware.cluster.balance":
+            return make_error("not_supported: vmware.cluster.balance is not implemented in this release")
+        if tool_name == "vmware.vm.metrics":
+            return await query.query_metrics(
+                query.QueryMetricsBody(
+                    object_id=str(_required("vm_id")),
+                    metric=str(_required("metric")),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.host.metrics":
+            return await query.query_metrics(
+                query.QueryMetricsBody(
+                    object_id=str(_required("host_id")),
+                    metric=str(_required("metric")),
+                    connection=body.input.get("connection"),
+                )
+            )
+        if tool_name == "vmware.vsan.health":
+            alerts = await query.query_alerts(query.ConnectionBody(connection=body.input.get("connection")))
+            return alerts
+        if tool_name == "vmware.datastore.usage":
+            inventory = await query.get_vcenter_inventory(query.ConnectionBody(connection=body.input.get("connection")))
+            return inventory
         if tool_name == "vmware.get_vcenter_inventory":
             return await query.get_vcenter_inventory(query.ConnectionBody(connection=body.input.get("connection")))
         if tool_name == "vmware.get_vm_detail":
