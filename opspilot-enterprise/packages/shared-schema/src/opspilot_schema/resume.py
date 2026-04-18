@@ -17,6 +17,10 @@ AuditEventType = Literal[
     "ROLLBACK",
     "FAILED",
     "COMPLETE",
+    "vmware_kb_search_started",
+    "vmware_kb_search_completed",
+    "vmware_kb_search_no_hit",
+    "vmware_kb_search_failed",
 ]
 ActorType = Literal["user", "system", "agent", "tool"]
 CheckpointStatus = Literal["safe", "waiting", "failed", "rolled_back"]

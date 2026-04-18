@@ -23,6 +23,7 @@ ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://127.0.0.1:8010")
 RESOURCE_BFF_URL = os.environ.get("RESOURCE_BFF_URL", "http://127.0.0.1:8000")
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
 EVENT_INGESTION_URL = os.environ.get("EVENT_INGESTION_URL", "http://127.0.0.1:8060")
+DEFAULT_CHAT_MODE = os.environ.get("DEFAULT_CHAT_MODE", "orchestrator_v2").strip().lower()
 VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
 VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
 VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
@@ -91,6 +92,12 @@ GENERIC_OPS_QA_CONTEXT = re.compile(
     re.I,
 )
 GENERIC_QA_RISK_KEYWORDS = re.compile(r"生产|中断|丢包|故障|风险|宕机|抖动|失败|回退", re.I)
+VMWARE_KB_CONTEXT = re.compile(r"vmware|esxi|vcenter|vsphere|broadcom|kb|知识库|文档", re.I)
+VMWARE_KB_ACTION = re.compile(
+    r"download|install|version|patch|article|compatibility|how do i|where|文档|下载|安装|版本|补丁|兼容|怎么下|如何下载",
+    re.I,
+)
+VMWARE_VERSION_PATTERN = re.compile(r"\b\d+(?:\.\d+){1,3}\b")
 LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "glm-5-turbo")
@@ -312,6 +319,81 @@ def _is_generic_ops_qa_intent(message: str) -> bool:
 
 def _is_risk_sensitive_question(message: str) -> bool:
     return bool(GENERIC_QA_RISK_KEYWORDS.search(message))
+
+
+def _is_vmware_kb_query_intent(message: str) -> bool:
+    if _is_diagnostic_query_intent(message):
+        return False
+    return bool(VMWARE_KB_CONTEXT.search(message) and VMWARE_KB_ACTION.search(message))
+
+
+def _normalize_vmware_kb_query(message: str) -> str:
+    query = message.strip()
+    lower = query.lower()
+    if "esxi" in lower and "download" not in lower and "下载" not in query:
+        query = f"{query} download"
+    version_match = VMWARE_VERSION_PATTERN.search(query)
+    if version_match and "version" not in lower and "版本" not in query:
+        query = f"{query} version {version_match.group(0)}"
+    return query.strip()
+
+
+def _format_vmware_kb_hit_reply(query: str, search_url: str, items: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    top_items = [it for it in items if isinstance(it, dict) and it.get("url")][:3]
+    refs = [str(it.get("url")) for it in top_items]
+    lines = [
+        "结论：可通过 Broadcom Support Portal 获取对应 ESXi 版本下载与文档入口，建议优先参考以下官方来源。",
+        "",
+        "官方来源（Top3）：",
+    ]
+    if top_items:
+        for idx, item in enumerate(top_items, 1):
+            title = str(item.get("title") or f"官方文档 {idx}").strip()
+            url = str(item.get("url")).strip()
+            lines.append(f"{idx}. [{title}]({url})")
+    else:
+        lines.append(f"1. [Broadcom 搜索结果]({search_url})")
+    lines.extend(
+        [
+            "",
+            "下载路径建议（门户导航步骤）：",
+            "1. 登录 Broadcom Support Portal（需具备有效账号与授权）。",
+            "2. 进入 VMware 产品对应页面，定位 ESXi 9.0.3 下载入口。",
+            "3. 下载前核对 release notes、补丁说明与兼容性矩阵。",
+            "",
+            "注意事项（账号权限/许可/版本匹配）：",
+            "1. 没有授权时可能只能查看文档，无法下载安装包。",
+            "2. 先确认与现有 vCenter、硬件平台的兼容关系。",
+            f"3. 如需自行检索，请使用直链：[打开搜索页]({search_url})，关键词建议：`{query}`。",
+        ]
+    )
+    return "\n".join(lines), refs
+
+
+def _format_vmware_kb_no_hit_reply(query: str, search_url: str) -> str:
+    return (
+        "结论：当前未命中高相关 VMware 官方结果，暂不直接给出确定下载链接。\n\n"
+        "未命中说明：可能受账号可见范围、关键词写法或版本表达方式影响。\n\n"
+        "建议改写关键词：\n"
+        f"1. `{query}`\n"
+        "2. `ESXi 9.0.3 release notes download`\n"
+        "3. `VMware ESXi 9.0.3 patch`\n\n"
+        f"Broadcom 搜索直链：[打开搜索页]({search_url})"
+    )
+
+
+async def _invoke_vmware_kb_search_fallback(message: str) -> tuple[dict[str, Any] | None, str | None]:
+    query = _normalize_vmware_kb_query(message)
+    payload = {
+        "query": query,
+        "segment": "VC",
+        "language": "en_US",
+        "page_size": 5,
+    }
+    data = await _invoke_tool_gateway("vmware.kb_search", payload)
+    if not data:
+        return None, "vmware.kb_search 调用失败"
+    return data, None
 
 
 def _is_diagnostic_query_intent(message: str) -> bool:
@@ -1031,6 +1113,133 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
             ),
         }
 
+    if _is_vmware_kb_query_intent(message):
+        await _write_audit_log(
+            {
+                "event_type": "vmware_kb_search_started",
+                "severity": "info",
+                "actor": "OpsQAAssistant",
+                "actor_type": "agent",
+                "action": "vmware.kb_search",
+                "outcome": "success",
+                "metadata": {"session_id": session_id},
+            }
+        )
+        kb_data, kb_error = await _invoke_vmware_kb_search_fallback(message)
+        query = _normalize_vmware_kb_query(message)
+        search_url = str((kb_data or {}).get("search_url") or f"https://support.broadcom.com/web/ecx/search?searchString={query}")
+        if kb_error:
+            await _write_audit_log(
+                {
+                    "event_type": "vmware_kb_search_failed",
+                    "severity": "warning",
+                    "actor": "OpsQAAssistant",
+                    "actor_type": "agent",
+                    "action": "vmware.kb_search",
+                    "outcome": "failure",
+                    "metadata": {"reason": kb_error},
+                }
+            )
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": (
+                    "检索 VMware KB 失败，请稍后重试。\n\n"
+                    f"你也可以先使用 Broadcom 搜索直链：[打开搜索页]({search_url})"
+                ),
+                "agent_name": "OpsQAAssistant",
+                "tool_traces": [
+                    {
+                        "tool_name": "vmware.kb_search",
+                        "gateway": "tool-gateway",
+                        "input_summary": f'{{"query":"{query}","segment":"VC","language":"en_US","page_size":5}}',
+                        "output_summary": kb_error,
+                        "duration_ms": 0,
+                        "status": "error",
+                        "timestamp": _now(),
+                    }
+                ],
+                "evidence_refs": [search_url],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户提出 VMware 文档/下载类问答。",
+                    "fallback 直接调用 vmware.kb_search 检索官方来源。",
+                    "工具调用失败，已返回可重试提示与搜索直链。",
+                ),
+            }
+
+        items = (kb_data or {}).get("items") or []
+        if isinstance(items, list) and items:
+            assistant_message, refs = _format_vmware_kb_hit_reply(query, search_url, items)
+            await _write_audit_log(
+                {
+                    "event_type": "vmware_kb_search_completed",
+                    "severity": "info",
+                    "actor": "OpsQAAssistant",
+                    "actor_type": "agent",
+                    "action": "vmware.kb_search",
+                    "outcome": "success",
+                    "metadata": {"hits": len(items)},
+                }
+            )
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": assistant_message,
+                "agent_name": "OpsQAAssistant",
+                "tool_traces": [
+                    {
+                        "tool_name": "vmware.kb_search",
+                        "gateway": "tool-gateway",
+                        "input_summary": f'{{"query":"{query}","segment":"VC","language":"en_US","page_size":5}}',
+                        "output_summary": f"hits={len(items)}",
+                        "duration_ms": 0,
+                        "status": "success",
+                        "timestamp": _now(),
+                    }
+                ],
+                "evidence_refs": refs,
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户提出 VMware 文档/下载类问答。",
+                    "fallback 优先检索官方 KB，并按相关度输出 Top3。",
+                    f"已返回 {min(3, len(items))} 条官方来源及下载建议。",
+                ),
+            }
+
+        await _write_audit_log(
+            {
+                "event_type": "vmware_kb_search_no_hit",
+                "severity": "warning",
+                "actor": "OpsQAAssistant",
+                "actor_type": "agent",
+                "action": "vmware.kb_search",
+                "outcome": "success",
+                "metadata": {"hits": 0},
+            }
+        )
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": _format_vmware_kb_no_hit_reply(query, search_url),
+            "agent_name": "OpsQAAssistant",
+            "tool_traces": [
+                {
+                    "tool_name": "vmware.kb_search",
+                    "gateway": "tool-gateway",
+                    "input_summary": f'{{"query":"{query}","segment":"VC","language":"en_US","page_size":5}}',
+                    "output_summary": "hits=0",
+                    "duration_ms": 0,
+                    "status": "warning",
+                    "timestamp": _now(),
+                }
+            ],
+            "evidence_refs": [search_url],
+            "evidences": [],
+            "reasoning_summary": _reasoning_summary(
+                "用户提出 VMware 文档/下载类问答。",
+                "fallback 调用 vmware.kb_search 并评估结果质量。",
+                "未命中高相关结果，已返回搜索直链与关键词改写建议。",
+            ),
+        }
+
     if _is_generic_ops_qa_intent(message):
         include_risk_guard = _is_risk_sensitive_question(message)
         await _write_audit_log(
@@ -1499,7 +1708,10 @@ async def send_message(session_id: str, body: SendMessageBody):
         if _sessions[session_id]["title"] in {"新会话", body.message[:30]}:
             _sessions[session_id]["title"] = body.message[:30]
 
-    task = asyncio.create_task(_process_message(session_id, assistant_id, body.message, body.mode))
+    selected_mode = (body.mode or DEFAULT_CHAT_MODE or "legacy").strip().lower()
+    if selected_mode not in {"legacy", "orchestrator_v2"}:
+        selected_mode = "legacy"
+    task = asyncio.create_task(_process_message(session_id, assistant_id, body.message, selected_mode))
     _message_tasks[assistant_id] = task
 
     return make_success(assistant_msg)

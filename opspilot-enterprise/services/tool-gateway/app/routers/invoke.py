@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
+from html import unescape
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urljoin
 from uuid import uuid4
 
 import httpx
@@ -20,11 +22,150 @@ KUBERNETES_GATEWAY_URL = os.environ.get("KUBERNETES_GATEWAY_URL", "http://localh
 CHANGE_IMPACT_URL = os.environ.get("CHANGE_IMPACT_URL", "http://localhost:8040")
 GOVERNANCE_SERVICE_URL = os.environ.get("GOVERNANCE_SERVICE_URL", "http://127.0.0.1:8071").rstrip("/")
 STRICT_SCHEMA_VALIDATION = os.environ.get("STRICT_SCHEMA_VALIDATION", "true").lower() == "true"
+BROADCOM_SEARCH_URL = "https://support.broadcom.com/web/ecx/search"
+BROADCOM_SEARCH_DEFAULT_SEGMENT = os.environ.get("BROADCOM_SEARCH_DEFAULT_SEGMENT", "VC")
+BROADCOM_SEARCH_DEFAULT_LANGUAGE = os.environ.get("BROADCOM_SEARCH_DEFAULT_LANGUAGE", "en_US")
+BROADCOM_SEARCH_TIMEOUT_SECONDS = float(os.environ.get("BROADCOM_SEARCH_TIMEOUT_SECONDS", "30"))
 
 
 class InvokeBody(BaseModel):
     input: Any = Field(default_factory=dict)
     dry_run: bool = False
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", unescape(value or "")).strip()
+
+
+def _extract_broadcom_results(html: str, query: str, page_size: int) -> list[dict[str, Any]]:
+    # Parse anchor tags from server-rendered HTML and keep likely KB/doc result links.
+    anchors = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, flags=re.IGNORECASE | re.DOTALL)
+    query_tokens = [token.lower() for token in re.findall(r"[a-zA-Z0-9_.-]+", query or "") if token.strip()]
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for href, raw_title in anchors:
+        title = _normalize_text(re.sub(r"<[^>]+>", " ", raw_title))
+        if not title:
+            continue
+        full_url = urljoin(BROADCOM_SEARCH_URL, href.strip())
+        if not full_url.startswith(("https://support.broadcom.com/", "https://docs.vmware.com/", "https://techdocs.broadcom.com/")):
+            continue
+        lowered = full_url.lower()
+        if any(
+            s in lowered
+            for s in (
+                "/group/ecx/",
+                "/web/ecx/all-products",
+                "/web/ecx/productlifecycle",
+                "/web/ecx/search?",
+                "/c/portal/login",
+                "dest=case",
+                "okta.com",
+                "partnerportal.broadcom.com",
+                "community.broadcom.com",
+            )
+        ):
+            continue
+        if full_url in seen:
+            continue
+        relevance = 0
+        corpus = f"{title} {full_url}".lower()
+        for token in query_tokens:
+            if token in corpus:
+                relevance += 1
+        if "kb" in lowered or "knowledge" in lowered:
+            relevance += 2
+        if "/external/content/" in lowered:
+            relevance += 2
+        candidates.append(
+            {
+                "title": title,
+                "url": full_url,
+                "snippet": "",
+                "source": "broadcom_support",
+                "relevance": relevance,
+            }
+        )
+        seen.add(full_url)
+    candidates.sort(key=lambda item: item.get("relevance", 0), reverse=True)
+    return candidates[: max(1, min(page_size, 20))]
+
+
+async def _invoke_vmware_kb_search(body: InvokeBody, request_id: str, trace_id: str) -> dict[str, Any]:
+    if not isinstance(body.input, dict):
+        return make_error(
+            error="invalid tool input",
+            data=_schema_error("INPUT_SCHEMA_VALIDATION_FAILED", "input must be object"),
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+    query = str(body.input.get("query") or "").strip()
+    if not query:
+        return make_error(
+            error="invalid tool input",
+            data=_schema_error(
+                "INPUT_SCHEMA_VALIDATION_FAILED",
+                "query is required",
+                [{"path": "$.query", "message": "is required"}],
+            ),
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+    try:
+        page = int(body.input.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(body.input.get("page_size") or 10)
+    except (TypeError, ValueError):
+        page_size = 10
+    segment = str(body.input.get("segment") or BROADCOM_SEARCH_DEFAULT_SEGMENT)
+    language = str(body.input.get("language") or BROADCOM_SEARCH_DEFAULT_LANGUAGE)
+    page = max(1, page)
+    page_size = max(1, min(page_size, 20))
+
+    params = {
+        "searchString": query,
+        "searchGroup": "KnowledgeBase",
+        "segment": segment,
+        "language": language,
+        "page": page,
+        # Keep KB source scope aligned with Broadcom search page options.
+        "aggregations": '[{"type":"_type","filter":["knowledge_articles_doc"]}]',
+    }
+    try:
+        async with httpx.AsyncClient(timeout=BROADCOM_SEARCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            upstream = await client.get(BROADCOM_SEARCH_URL, params=params)
+    except Exception as exc:  # noqa: BLE001
+        return make_error(
+            error=f"broadcom kb search request failed: {exc}",
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+
+    search_url = str(upstream.request.url)
+    if upstream.status_code >= 400:
+        preview = (upstream.text or "").strip()[:600]
+        return make_error(
+            error=f"broadcom kb search failed (status {upstream.status_code}); body_preview={preview!r}",
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+
+    html = upstream.text or ""
+    items = _extract_broadcom_results(html, query=query, page_size=page_size)
+    data = {
+        "query": query,
+        "search_url": search_url,
+        "source": "https://support.broadcom.com/web/ecx/search",
+        "total_candidates": len(items),
+        "items": items,
+        "notes": [
+            "Results are extracted from Broadcom support search page content.",
+            "If the page requires interactive rendering/login, candidate list may be partial.",
+        ],
+    }
+    return make_success(data=data, request_id=request_id, trace_id=trace_id)
 
 
 def _schema_error(code: str, message: str, field_errors: list[dict[str, str]] | None = None) -> dict:
@@ -147,6 +288,9 @@ async def invoke_tool(tool_name: str, body: InvokeBody, response: Response) -> d
 
     payload = {"input": body.input, "dry_run": body.dry_run}
     safe_path = quote(tool_name, safe="")
+
+    if tool_name == "vmware.kb_search":
+        return await _invoke_vmware_kb_search(body=body, request_id=request_id, trace_id=trace_id)
 
     if tool_name.startswith("vmware."):
         url = f"{VMWARE_GATEWAY_URL.rstrip('/')}/api/v1/invoke/{safe_path}"

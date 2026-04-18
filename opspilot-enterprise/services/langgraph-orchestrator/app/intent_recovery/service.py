@@ -37,6 +37,14 @@ def _keyword_score(spec: IntentSpec, utterance: str) -> float:
         score = max(score, 0.9)
     if spec.action == "service_restart" and any(token in text for token in ("restart service", "service restart", "重启服务", "service")):
         score = max(score, 0.95)
+    if spec.action == "vmware_kb_search":
+        vmware_ctx = any(token in text for token in ("vmware", "esxi", "vcenter", "vsphere"))
+        doc_intent = any(
+            token in text
+            for token in ("download", "install", "version", "patch", "kb", "article", "compatibility", "文档", "下载", "版本", "补丁", "兼容")
+        )
+        if vmware_ctx and doc_intent:
+            score = max(score, 0.96)
     return score
 
 
@@ -68,6 +76,8 @@ def _build_candidate(inp: IntentRecoverInput, spec: IntentSpec) -> IntentCandida
     slot_completeness, missing = _slot_completeness(spec, slot_map)
     rules = _keyword_score(spec, inp.utterance)
     entity_match = _entity_match(slot_map)
+    if spec.action == "vmware_kb_search" and slot_map.get("query_text"):
+        entity_match = max(entity_match, 0.9)
     memory_boost = _memory_boost(inp, spec)
     llm_rerank = rules
     score_result = compute_final_score(

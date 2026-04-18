@@ -11,6 +11,20 @@ _TOOLS: list[dict] = [
     ToolMeta(name="vmware.query_metrics", display_name="Query metrics", category="observability", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["metric"]).model_dump(),
     ToolMeta(name="vmware.query_alerts", display_name="Query alerts", category="observability", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["alert"]).model_dump(),
     ToolMeta(name="vmware.query_topology", display_name="Query topology", category="inventory", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["topology"]).model_dump(),
+    ToolMeta(
+        name="vmware.kb_search",
+        display_name="Search VMware KB",
+        category="knowledge",
+        domain="vmware",
+        provider="broadcom",
+        action_type="read",
+        risk_level="low",
+        approval_required=False,
+        timeout_seconds=60,
+        idempotent=True,
+        version="1.0.0",
+        tags=["vmware", "kb", "knowledge", "search"],
+    ).model_dump(),
     ToolMeta(name="vmware.create_snapshot", display_name="Create snapshot", category="compute", domain="vmware", provider="vmware", action_type="write", risk_level="medium", approval_required=True, timeout_seconds=300, idempotent=False, version="1.0.0", tags=["vm", "snapshot"]).model_dump(),
     ToolMeta(name="vmware.vm_migrate", display_name="Migrate VM", category="compute", domain="vmware", provider="vmware", action_type="write", risk_level="high", approval_required=True, timeout_seconds=900, idempotent=False, version="1.0.0", tags=["vm", "migrate"]).model_dump(),
     ToolMeta(name="vmware.vm_power_on", display_name="Power on VM", category="compute", domain="vmware", provider="vmware", action_type="write", risk_level="medium", approval_required=True, timeout_seconds=120, idempotent=False, version="1.0.0", tags=["vm", "power"]).model_dump(),
@@ -197,6 +211,17 @@ _INPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {"host_id": {"type": "string"}, "metric": {"type": "string"}},
         "required": ["host_id", "metric"],
+    },
+    "vmware.kb_search": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "page": {"type": "integer"},
+            "page_size": {"type": "integer"},
+            "segment": {"type": "string"},
+            "language": {"type": "string"},
+        },
+        "required": ["query"],
     },
 }
 for tool in _TOOLS:

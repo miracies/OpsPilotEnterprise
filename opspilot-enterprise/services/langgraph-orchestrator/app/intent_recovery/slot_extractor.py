@@ -19,6 +19,11 @@ _REPLICAS_PATTERN = re.compile(r"(?:副本|replicas?)\s*(?:到|为|=)?\s*(\d+)",
 _VM_PATTERN = re.compile(r"(?:虚拟机|\bvm\b)\s*[:：]?\s*([A-Za-z0-9._-]+)", re.I)
 _POWER_VM_PATTERN = re.compile(r"(?:打开|开启|启动|开机|关闭|关机|power\s+on|power\s+off|turn\s+on|turn\s+off)\s*(?:虚拟机|\bvm\b)?\s*([A-Za-z0-9._-]+)", re.I)
 _SERVICE_PATTERN = re.compile(r"([A-Za-z0-9._-]+)\s*(?:服务|service)", re.I)
+_VERSION_PATTERN = re.compile(r"\b(\d+(?:\.\d+){1,3})\b")
+_VMWARE_DOC_KEYWORDS = re.compile(
+    r"vmware|esxi|vcenter|vsphere|download|install|version|patch|kb|article|compatibility|文档|下载|版本|补丁|兼容",
+    re.I,
+)
 
 
 def normalize_utterance(text: str) -> str:
@@ -54,6 +59,20 @@ def extract_slots(utterance: str, history: list[dict[str, Any]] | None = None) -
     service_match = _SERVICE_PATTERN.search(text)
     if service_match and "service_name" not in {slot.name for slot in slots}:
         slots.append(SlotValue(name="service_name", value=service_match.group(1), source="user", confidence=0.8))
+
+    if _VMWARE_DOC_KEYWORDS.search(text):
+        slots.append(SlotValue(name="query_text", value=text.strip(), source="user", confidence=0.95))
+        slots.append(SlotValue(name="language", value="en_US", source="inferred", confidence=0.8))
+        slots.append(SlotValue(name="resource_scope", value="global", source="inferred", confidence=0.9))
+        if "esxi" in lower_text:
+            slots.append(SlotValue(name="product", value="ESXi", source="inferred", confidence=0.9))
+        elif "vcenter" in lower_text:
+            slots.append(SlotValue(name="product", value="vCenter", source="inferred", confidence=0.85))
+        elif "vsphere" in lower_text:
+            slots.append(SlotValue(name="product", value="vSphere", source="inferred", confidence=0.85))
+        version_match = _VERSION_PATTERN.search(text)
+        if version_match:
+            slots.append(SlotValue(name="version", value=version_match.group(1), source="user", confidence=0.95))
 
     if any(token in lower_text for token in ("批量", "多个", "集群", "cluster")):
         slots.append(SlotValue(name="resource_scope", value="cluster", source="inferred", confidence=0.7))
