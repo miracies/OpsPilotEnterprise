@@ -1,12 +1,16 @@
 ﻿"""Smoke tests for LangGraph Orchestrator."""
 import os
+import sys
 
 from conftest import load_service_app
 from fastapi.testclient import TestClient
 
 SERVICE_DIR = os.path.join(os.path.dirname(__file__), "..", "services", "langgraph-orchestrator")
 _app = load_service_app(SERVICE_DIR)
+ORCHESTRATOR_MAIN = sys.modules["app.main"]
 client = TestClient(_app)
+for _module_name in [k for k in sys.modules if k == "app" or k.startswith("app.")]:
+    del sys.modules[_module_name]
 
 
 def test_health():
@@ -45,7 +49,7 @@ def test_chat_resource_query_requires_confirmation():
 
 
 def test_chat_resource_query_confirm_then_execute(monkeypatch):
-    import app.main as orchestrator_main
+    orchestrator_main = ORCHESTRATOR_MAIN
 
     async def _fake_inventory():
         return {
@@ -81,7 +85,7 @@ def test_chat_resource_query_confirm_then_execute(monkeypatch):
 
 
 def test_chat_non_resource_path_still_works(monkeypatch):
-    import app.main as orchestrator_main
+    orchestrator_main = ORCHESTRATOR_MAIN
 
     async def _fake_llm_chat(_message, _history=None):
         return "普通对话响应"
@@ -102,7 +106,7 @@ def test_chat_non_resource_path_still_works(monkeypatch):
 
 
 def test_chat_export_vm_list(monkeypatch):
-    import app.main as orchestrator_main
+    orchestrator_main = ORCHESTRATOR_MAIN
 
     async def _fake_export(_session_id: str, _requested_columns: list[str]):
         return {

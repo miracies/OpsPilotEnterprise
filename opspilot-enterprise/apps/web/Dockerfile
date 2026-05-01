@@ -1,7 +1,8 @@
-FROM node:20-slim AS builder
+﻿FROM node:20-slim AS builder
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /app
 COPY apps/web/package.json apps/web/pnpm-lock.yaml* ./
-RUN corepack enable && pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+RUN corepack enable && pnpm config set registry ${NPM_REGISTRY} && (pnpm install --frozen-lockfile || pnpm install)
 COPY apps/web/ .
 COPY packages/shared-types/ /packages/shared-types/
 RUN pnpm build

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from opspilot_schema.interaction import ClarifyAnswerRequest, ClarifyCreateRequest, ClarifyRecord
 
 from app.storage.db import execute, query_one
+from app.storage.postgres import write_shadow_event
 
 
 def _now() -> str:
@@ -25,6 +26,7 @@ def create_clarify(body: ClarifyCreateRequest) -> ClarifyRecord:
         choices=body.choices,
         allow_free_text=body.allow_free_text,
         reason_code=body.reason_code,
+        candidate_targets=body.candidate_targets,
         status="pending",
         expires_at=_expires(body.expires_in_seconds),
         created_at=_now(),
@@ -44,6 +46,7 @@ def create_clarify(body: ClarifyCreateRequest) -> ClarifyRecord:
             record.expires_at,
         ),
     )
+    write_shadow_event("op_interactions", record.interaction_id, record.model_dump())
     return record
 
 
@@ -79,4 +82,5 @@ def answer_clarify(interaction_id: str, body: ClarifyAnswerRequest) -> ClarifyRe
             interaction_id,
         ),
     )
+    write_shadow_event("op_interactions", interaction_id, record.model_dump())
     return record

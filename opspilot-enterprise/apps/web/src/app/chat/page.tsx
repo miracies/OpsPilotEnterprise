@@ -1,7 +1,6 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type KeyboardEvent } from "react";
-import Link from "next/link";
 import {
   Bot,
   Brain,
@@ -13,7 +12,6 @@ import {
   ExternalLink,
   FileText,
   Loader2,
-  Play,
   Plus,
   Send,
   Sparkles,
@@ -28,6 +26,7 @@ import { ApprovalCard } from "@/components/chat/ApprovalCard";
 import { AuditTimeline } from "@/components/chat/AuditTimeline";
 import { ClarifyCard } from "@/components/chat/ClarifyCard";
 import { IntentRecoveryCard } from "@/components/chat/IntentRecoveryCard";
+import { MetricResultCard } from "@/components/chat/MetricResultCard";
 import { ResumeCard } from "@/components/chat/ResumeCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -129,7 +128,6 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const executionHref = activeSession ? `/executions?session_id=${activeSession}` : "/executions";
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -169,21 +167,24 @@ export default function ChatPage() {
     setActiveSession(res.data.id);
   }
 
-  async function handleSend() {
-    if (!input.trim() || sending) return;
+  async function handleSend(messageOverride?: string) {
+    const outgoing = (messageOverride ?? input).trim();
+    if (!outgoing || sending) return;
     let sessionId = activeSession;
     if (!sessionId) {
       const res = await apiFetch<{ data: ChatSession }>("/api/v1/chat/sessions", {
         method: "POST",
-        body: JSON.stringify({ title: input.trim().slice(0, 30) }),
+        body: JSON.stringify({ title: outgoing.slice(0, 30) }),
       });
       sessionId = res.data.id;
       setSessions((prev) => [res.data, ...prev]);
       setActiveSession(sessionId);
     }
-    const userMsg: ChatMessage = { id: `tmp-${Date.now()}`, session_id: sessionId, role: "user", content: input.trim(), timestamp: new Date().toISOString() };
+    const userMsg: ChatMessage = { id: `tmp-${Date.now()}`, session_id: sessionId, role: "user", content: outgoing, timestamp: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg]);
-    setInput("");
+    if (!messageOverride) {
+      setInput("");
+    }
     setSending(true);
     try {
       const res = await apiFetch<{ data: ChatMessage }>(`/api/v1/chat/sessions/${sessionId}/messages`, {
@@ -217,7 +218,7 @@ export default function ChatPage() {
   function appendAssistantFromInteraction(payload: Record<string, unknown>) {
     if (!activeSession) return;
     const nextAction = String(payload.next_action ?? "done");
-    const nextMessageText = String(payload.next_message ?? "已处理本次交互。");
+    const nextMessageText = String(payload.next_message ?? payload.assistant_message ?? "已处理本次交互。");
     const trigger = payload.approval_card ? "approval" : payload.clarify_card ? "clarify" : "system";
     const nextMessage: ChatMessage = {
       id: `msg-local-${Date.now()}`,
@@ -225,7 +226,7 @@ export default function ChatPage() {
       role: "assistant",
       content: nextMessageText,
       timestamp: new Date().toISOString(),
-      kind: "text",
+      kind: (payload.kind as ChatMessage["kind"]) ?? "text",
       workflow_update: {
         trigger,
         next_action: nextAction,
@@ -233,24 +234,37 @@ export default function ChatPage() {
         updated_at: new Date().toISOString(),
       },
       intent_recovery: payload.intent_recovery as ChatMessage["intent_recovery"],
+      execution_intent: payload.execution_intent as ChatMessage["execution_intent"],
+      risk_context: payload.risk_context as ChatMessage["risk_context"],
+      memory_refs: payload.memory_refs as ChatMessage["memory_refs"],
       clarify_card: payload.clarify_card as ChatMessage["clarify_card"],
       approval_card: payload.approval_card as ChatMessage["approval_card"],
       resume_card: payload.resume_card as ChatMessage["resume_card"],
+      rerun_result: payload.rerun_result as ChatMessage["rerun_result"],
+      execution_progress: payload.execution_progress as ChatMessage["execution_progress"],
       audit_timeline: payload.audit_timeline as ChatMessage["audit_timeline"],
+      tool_traces: payload.tool_traces as ChatMessage["tool_traces"],
+      evidence_refs: payload.evidence_refs as ChatMessage["evidence_refs"],
+      analysis_steps: payload.analysis_steps as ChatMessage["analysis_steps"],
+      diagnosis_id: payload.diagnosis_id as ChatMessage["diagnosis_id"],
+      metric_result: payload.metric_result as ChatMessage["metric_result"],
+      recommended_actions: payload.recommended_actions as ChatMessage["recommended_actions"],
+      root_cause_candidates: payload.root_cause_candidates as ChatMessage["root_cause_candidates"],
       status: "completed",
-      reasoning_summary: {
-        intent_understanding: "交互结果已回传到会话。",
-        execution_plan: "根据后端 next_action 自动衔接下一步。",
-        result_summary: nextAction,
-      },
+      reasoning_summary:
+        (payload.reasoning_summary as ChatMessage["reasoning_summary"]) ?? {
+          intent_understanding: "交互结果已回传到会话。",
+          execution_plan: "根据后端 next_action 自动衔接下一步。",
+          result_summary: nextAction,
+        },
       agent_name: "OrchestratorV2",
     };
     setMessages((prev) => [...prev, nextMessage]);
   }
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] gap-4">
-      <div className="w-64 shrink-0 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
+    <div className="grid h-[calc(100vh-5.25rem)] min-h-0 grid-cols-[320px_minmax(0,1fr)] gap-4 xl:grid-cols-[320px_minmax(0,1fr)_280px]">
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
         <div className="mb-3 flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold text-slate-900">AI 对话</p>
@@ -260,7 +274,7 @@ export default function ChatPage() {
             <Plus className="h-3.5 w-3.5" /> 新建
           </Button>
         </div>
-        <div className="space-y-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
           {sessions.map((session) => (
             <button key={session.id} onClick={() => setActiveSession(session.id)} className={cn("w-full rounded-lg border px-3 py-2 text-left", activeSession === session.id ? "border-blue-300 bg-blue-50" : "border-slate-200 hover:bg-slate-50")}>
               <p className="truncate text-sm font-medium text-slate-800">{session.title}</p>
@@ -270,7 +284,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex-1 space-y-5 overflow-y-auto pb-4 pr-1">
           {messages.length === 0 && !sending && (
             <div className="flex h-full flex-col items-center justify-center text-center">
@@ -283,9 +297,17 @@ export default function ChatPage() {
           {messages.map((message) => (
             <div key={message.id} className={cn("flex items-start gap-3", message.role === "user" ? "justify-end" : "") }>
               {message.role === "assistant" && <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-blue-700"><Sparkles className="h-3.5 w-3.5 text-white" /></div>}
-              <div className={cn("max-w-[72%] rounded-2xl text-sm", message.role === "user" ? "rounded-tr-sm bg-blue-600 px-4 py-3 text-white" : "rounded-tl-sm border border-slate-200 bg-white px-4 py-3 shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]")}>
+              <div className={cn("max-w-[min(760px,78%)] rounded-2xl text-sm", message.role === "user" ? "rounded-tr-sm bg-blue-600 px-4 py-3 text-white" : "rounded-tl-sm border border-slate-200 bg-white px-4 py-3 shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]")}>
                 {message.agent_name && <p className={cn("mb-1.5 flex items-center gap-1 text-[11px] font-medium", message.role === "assistant" ? "text-blue-600" : "text-blue-100")}><Bot className="h-3 w-3" />{message.agent_name}</p>}
                 <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+
+                {message.metric_result && (
+                  <MetricResultCard
+                    result={message.metric_result}
+                    actionPending={sending}
+                    onAction={(prompt) => void handleSend(prompt)}
+                  />
+                )}
 
                 {message.status && <p className={cn("mt-1 text-[11px] font-medium", message.status === "failed" ? "text-red-600" : message.status === "completed" ? "text-emerald-600" : "text-blue-600")}>状态：{message.status === "in_progress" ? "执行中" : message.status === "completed" ? "已完成" : "失败"}</p>}
 
@@ -345,11 +367,31 @@ export default function ChatPage() {
                   </Card>
                 )}
 
-                {message.intent_recovery && <IntentRecoveryCard run={message.intent_recovery} />}
+                {message.intent_recovery && (
+                  <IntentRecoveryCard
+                    run={message.intent_recovery}
+                    executionIntent={message.execution_intent}
+                    riskContext={message.risk_context}
+                    memoryRefs={message.memory_refs}
+                    evidenceRefs={message.evidence_refs}
+                  />
+                )}
                 {message.clarify_card && <ClarifyCard record={message.clarify_card} onResolved={appendAssistantFromInteraction} />}
                 {message.approval_card && <ApprovalCard record={message.approval_card} onResolved={appendAssistantFromInteraction} />}
                 {message.resume_card && <ResumeCard record={message.resume_card} />}
                 {message.audit_timeline && <AuditTimeline data={message.audit_timeline} />}
+                {message.execution_progress && (
+                  <Card className="mt-3 border-emerald-200 bg-emerald-50/40 p-2.5">
+                    <p className="text-[11px] font-medium text-emerald-700">执行进度</p>
+                    <p className="text-[11px] text-slate-700">状态：{message.execution_progress.status}</p>
+                    {typeof message.execution_progress.steps_total === "number" && (
+                      <p className="text-[11px] text-slate-700">
+                        步骤：{message.execution_progress.steps_completed ?? 0}/{message.execution_progress.steps_total}
+                      </p>
+                    )}
+                    {message.execution_progress.reason && <p className="text-[11px] text-slate-600">原因：{message.execution_progress.reason}</p>}
+                  </Card>
+                )}
 
                 {message.tool_traces && message.tool_traces.length > 0 && (
                   <div className="mt-3 border-t border-slate-100 pt-2">
@@ -405,14 +447,13 @@ export default function ChatPage() {
               disabled={sending}
               className="flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             />
-            <Link href={executionHref}><Button size="md" variant="secondary"><Play className="h-4 w-4" />执行申请</Button></Link>
             <Button size="md" onClick={() => void handleSend()} disabled={sending || !input.trim()}>{sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}发送</Button>
           </div>
-          <p className="mt-1.5 pl-0.5 text-[11px] text-slate-400">支持自然语言；Enter 发送，Shift+Enter 换行。</p>
+          <p className="mt-1.5 pl-0.5 text-[11px] text-slate-400">直接输入运维问题或执行诉求，例如：分析 esx06 健康情况 / 打开 Test-VM 电源。Enter 发送，Shift+Enter 换行。</p>
         </div>
       </div>
 
-      <div className="w-64 shrink-0 space-y-3 overflow-y-auto">
+      <div className="hidden min-h-0 space-y-3 overflow-y-auto xl:block">
         <div className="px-1"><span className="text-xs font-semibold uppercase tracking-wider text-slate-500">关联证据</span></div>
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_1px_3px_0_rgb(0_0_0/0.06)]">
           {evidence.length === 0 ? (

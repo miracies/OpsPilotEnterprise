@@ -17,9 +17,9 @@ app = FastAPI(title="OpsPilot Topology Service")
 
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020").rstrip("/")
 EVENT_INGESTION_URL = os.environ.get("EVENT_INGESTION_URL", "http://127.0.0.1:8060").rstrip("/")
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 VCENTER_CONNECTION_ID = os.environ.get("VCENTER_CONNECTION_ID", "conn-vcenter-prod")
 TOPOLOGY_INVENTORY_TIMEOUT_SEC = float(os.environ.get("TOPOLOGY_INVENTORY_TIMEOUT_SEC", "45"))
 

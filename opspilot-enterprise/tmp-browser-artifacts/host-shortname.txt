@@ -1,0 +1,203 @@
+OP
+OpsPilot
+Enterprise
+
+概览
+
+驾驶舱
+AI 对话
+
+故障与诊断
+
+故障事件
+诊断工作台
+
+变更与执行
+
+变更分析
+执行申请
+审批中心
+
+运营
+
+值班通知
+审计中心
+证据中心
+案例归档
+
+平台
+
+Tool Gateway
+资源连接
+密钥管理
+vCenter 资源
+K8s 资源
+拓扑视图
+知识管理
+策略管理
+Agent 视图
+系统配置
+升级管理
+
+v0.2.0-P1
+
+生产环境
+3
+A
+管理员
+
+AI 对话
+
+模式：orchestrator_v2
+
+新建
+
+新会话
+
+2026/04/21 23:34
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:34
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:33
+
+分析 esx06 健康情况
+
+2026/04/21 23:33
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:19
+
+analyze esx06 host health
+
+2026/04/21 22:44
+
+analyze esx06 host health
+
+2026/04/21 22:41
+
+分析 esx06 健康情况
+
+OrchestratorV2
+
+未在当前连接中找到目标对象：esx06。请确认名称或切换连接后重试。
+
+状态：已完成
+
+执行状态时间线
+
+汇总结果中
+完成
+任务执行完成
+2026/04/21 23:34
+查看历史状态 (9)
+
+思考摘要
+
+意图理解：系统已恢复到候选意图，但关键信息仍不足。
+
+执行计划：发起 Clarify 交互补齐关键槽位或确认候选。
+
+结果摘要：当前未执行任何副作用操作，等待用户补充。
+
+Intent Recovery
+
+run_id: ir_f33e3a2b42e4
+
+clarify_required
+
+执行意图：read
+
+识别为只读/问答意图，不需要执行副作用动作。
+
+环境：prod
+
+范围：single
+
+对象数：1
+
+vmware.host.diagnose
+
+L0 只读
+0.66
+
+分析 vCenter/ESXi 主机健康
+
+目标对象：esx06
+
+对象类型：host | 解析置信度：0.00
+
+已识别目标对象 mention，但当前连接未解析到匹配对象。
+
+knowledge.explain
+
+L0 只读
+0.26
+
+通用运维知识问答
+
+knowledge.vmware_kb_search
+
+L0 只读
+0.26
+
+VMware/Broadcom 文档与下载类知识检索
+
+记忆命中：分析 esx06 健康情况
+
+需要补充信息
+
+未在当前连接中找到目标对象：esx06。请确认名称或切换连接后重试。
+
+提交补充信息
+
+Audit Timeline
+
+ir_f33e3a2b42e4
+RECOVER
+2026/04/21 23:34
+
+恢复意图: clarify_required
+
+CONTEXT_COMPLETED
+2026/04/21 23:34
+
+context_hints=history_size
+
+NORMALIZED
+2026/04/21 23:34
+
+分析 esx06 健康情况
+
+DISAMBIGUATED
+2026/04/21 23:34
+
+decision=clarify_required
+
+EXECUTION_INTENT_SET
+2026/04/21 23:34
+
+mode=read
+
+MEMORY_HIT
+2026/04/21 23:34
+
+memory_refs=1
+
+CLARIFY_CREATED
+2026/04/21 23:34
+
+未在当前连接中找到目标对象：esx06。请确认名称或切换连接后重试。
+
+执行申请
+发送
+
+支持自然语言；Enter 发送，Shift+Enter 换行。
+
+关联证据
+
+暂无关联证据

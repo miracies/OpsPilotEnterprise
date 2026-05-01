@@ -9,13 +9,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import type { ConnectionProfile, VCenterInventory, VCenterOverview } from "@opspilot/shared-types";
+import type { ConnectionProfile, MemoryItem, VCenterInventory, VCenterOverview } from "@opspilot/shared-types";
 
 export default function VCenterResourcesPage() {
   const [connections, setConnections] = useState<ConnectionProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [overview, setOverview] = useState<VCenterOverview | null>(null);
   const [inventory, setInventory] = useState<VCenterInventory | null>(null);
+  const [memoryTarget, setMemoryTarget] = useState("");
+  const [resourceMemories, setResourceMemories] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
 
@@ -51,6 +53,24 @@ export default function VCenterResourcesPage() {
     () => connections.find((conn) => conn.id === selectedId) ?? null,
     [connections, selectedId],
   );
+  const memoryTargets = useMemo(() => buildMemoryTargets(inventory), [inventory]);
+
+  useEffect(() => {
+    if (memoryTargets.length > 0 && !memoryTarget) {
+      setMemoryTarget(memoryTargets[0].value);
+    }
+  }, [memoryTargets, memoryTarget]);
+
+  useEffect(() => {
+    if (!memoryTarget) return;
+    const [resourceType, resourceId] = memoryTarget.split(":", 2);
+    if (!resourceType || !resourceId) return;
+    apiFetch<{ data?: { items?: MemoryItem[] } }>(
+      `/api/v1/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/memories?tenant_id=default`
+    )
+      .then((res) => setResourceMemories(res.data?.items ?? []))
+      .catch(() => setResourceMemories([]));
+  }, [memoryTarget]);
 
   if (loading) {
     return <div className="flex h-64 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-blue-600" /></div>;
@@ -105,6 +125,13 @@ export default function VCenterResourcesPage() {
               <Info label="采集时间" value={formatDate(overview.generated_at)} />
             </CardContent>
           </Card>
+
+          <ResourceMemoryPanel
+            targets={memoryTargets}
+            selected={memoryTarget}
+            onSelected={setMemoryTarget}
+            memories={resourceMemories}
+          />
 
           <div className="grid grid-cols-2 gap-4">
             <TableCard
@@ -190,6 +217,70 @@ function Info({ label, value, mono = false }: { label: string; value: string; mo
       <p className={mono ? "mt-1 break-all font-mono text-xs text-slate-700" : "mt-1 text-sm text-slate-700"}>{value}</p>
     </div>
   );
+}
+
+function ResourceMemoryPanel({
+  targets,
+  selected,
+  onSelected,
+  memories,
+}: {
+  targets: Array<{ value: string; label: string }>;
+  selected: string;
+  onSelected: (value: string) => void;
+  memories: MemoryItem[];
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Resource Memory</CardTitle>
+          <select className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs" value={selected} onChange={(e) => onSelected(e.target.value)}>
+            {targets.map((target) => <option key={target.value} value={target.value}>{target.label}</option>)}
+          </select>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {memories.length === 0 ? (
+          <div className="text-sm text-slate-500">No historical memory for this resource.</div>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {memories.slice(0, 6).map((memory) => (
+              <div key={memory.id} className="rounded-lg border border-slate-200 p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="text-sm font-medium text-slate-900">{memory.title}</div>
+                  <Badge variant={memory.status === "active" ? "success" : "neutral"}>{memory.status}</Badge>
+                </div>
+                <p className="line-clamp-2 text-xs text-slate-600">{memory.summary}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <Badge variant="neutral">{memory.memory_type}</Badge>
+                  {memory.tags.slice(0, 3).map((tag) => <Badge key={tag} variant="neutral">{tag}</Badge>)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function buildMemoryTargets(inventory: VCenterInventory | null): Array<{ value: string; label: string }> {
+  if (!inventory) return [];
+  const targets: Array<{ value: string; label: string }> = [];
+  for (const vm of (inventory.virtual_machines ?? []).slice(0, 20) as Array<Record<string, unknown>>) {
+    const id = String(vm.vm_id || vm.name || "");
+    if (id) targets.push({ value: `vm:${id}`, label: `VM ${String(vm.name || id)}` });
+  }
+  for (const host of (inventory.hosts ?? []).slice(0, 10) as Array<Record<string, unknown>>) {
+    const id = String(host.host_id || host.name || "");
+    if (id) targets.push({ value: `host:${id}`, label: `Host ${String(host.name || id)}` });
+  }
+  for (const datastore of (inventory.datastores ?? []).slice(0, 10) as Array<Record<string, unknown>>) {
+    const id = String(datastore.datastore_id || datastore.name || "");
+    if (id) targets.push({ value: `datastore:${id}`, label: `Datastore ${String(datastore.name || id)}` });
+  }
+  return targets;
 }
 
 function StatusBadge({ status }: { status: string }) {

@@ -42,6 +42,63 @@ export interface ReasoningSummary {
   result_summary: string;
 }
 
+export interface MetricResult {
+  scope: string;
+  window: string;
+  source: string;
+  status?: string;
+  metrics?: Array<{ name: string; label: string; unit: string }>;
+  series: Array<{
+    timestamp: string;
+    cpu_avg?: number | null;
+    cpu_max?: number | null;
+    memory_avg?: number | null;
+    memory_max?: number | null;
+    [key: string]: string | number | null | undefined;
+  }>;
+  host_series?: Array<{
+    host_id?: string;
+    name: string;
+    cluster_id?: string;
+    cpu_current?: number | null;
+    cpu_avg?: number | null;
+    cpu_peak?: number | null;
+    cpu_high_minutes?: number;
+    memory_current?: number | null;
+    memory_avg?: number | null;
+    memory_peak?: number | null;
+    memory_high_minutes?: number;
+    max_usage?: number | null;
+    primary_pressure?: string;
+    cpu_series?: Array<{ timestamp: string; value: number; source?: string }>;
+    memory_series?: Array<{ timestamp: string; value: number; source?: string }>;
+  }>;
+  summary_stats?: Record<string, unknown>;
+  top_hosts?: Array<{
+    host_id?: string;
+    name: string;
+    cpu_current?: number | null;
+    cpu_avg?: number | null;
+    cpu_peak?: number | null;
+    cpu_high_minutes?: number;
+    memory_current?: number | null;
+    memory_avg?: number | null;
+    memory_peak?: number | null;
+    memory_high_minutes?: number;
+    max_usage?: number | null;
+    primary_pressure?: string;
+  }>;
+  insights?: string[];
+  next_actions?: string[];
+  next_action_items?: Array<{
+    label: string;
+    prompt: string;
+    kind?: string;
+    target?: Record<string, unknown>;
+    intent?: Record<string, unknown>;
+  }>;
+}
+
 export interface ChatMessage {
   id: string;
   session_id: string;
@@ -117,6 +174,7 @@ export interface ChatMessage {
   agent_name?: string;
   diagnosis_id?: string;
   incident_id?: string;
+  metric_result?: MetricResult;
   export_file?: {
     export_id: string;
     file_name: string;
@@ -132,6 +190,17 @@ export interface ChatMessage {
   status?: "in_progress" | "completed" | "failed";
   progress_events?: ProgressEvent[];
   reasoning_summary?: ReasoningSummary;
+  execution_intent?: import("./intent").ExecutionIntent;
+  risk_context?: import("./intent").RiskContext;
+  memory_refs?: string[];
+  rerun_result?: import("./intent").IntentAnalyzeResponse;
+  execution_progress?: {
+    status: string;
+    reason?: string;
+    run_id?: string;
+    steps_total?: number;
+    steps_completed?: number;
+  };
   analysis_steps?: Array<{
     agent: string;
     stage?: string;

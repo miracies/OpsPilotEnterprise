@@ -64,6 +64,11 @@ async def invoke(tool_name: str, body: InvokeBody) -> dict:
                 query.QueryMetricsBody(
                     object_id=str(_required("vm_id")),
                     metric=str(_required("metric")),
+                    object_type="vm",
+                    metrics=body.input.get("metrics"),
+                    range_minutes=body.input.get("range_minutes", 0),
+                    step_seconds=body.input.get("step_seconds", 300),
+                    source=body.input.get("source", "vcenter"),
                     connection=body.input.get("connection"),
                 )
             )
@@ -72,6 +77,11 @@ async def invoke(tool_name: str, body: InvokeBody) -> dict:
                 query.QueryMetricsBody(
                     object_id=str(_required("host_id")),
                     metric=str(_required("metric")),
+                    object_type="host",
+                    metrics=body.input.get("metrics"),
+                    range_minutes=body.input.get("range_minutes", 0),
+                    step_seconds=body.input.get("step_seconds", 300),
+                    source=body.input.get("source", "vcenter"),
                     connection=body.input.get("connection"),
                 )
             )
@@ -108,6 +118,11 @@ async def invoke(tool_name: str, body: InvokeBody) -> dict:
                 query.QueryMetricsBody(
                     object_id=str(_required("object_id")),
                     metric=str(_required("metric")),
+                    object_type=body.input.get("object_type"),
+                    metrics=body.input.get("metrics"),
+                    range_minutes=body.input.get("range_minutes", 0),
+                    step_seconds=body.input.get("step_seconds", 300),
+                    source=body.input.get("source", "vcenter"),
                     connection=body.input.get("connection"),
                 )
             )

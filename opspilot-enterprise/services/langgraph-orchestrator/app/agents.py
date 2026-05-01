@@ -31,7 +31,21 @@ class EvidenceAgent(BaseSubAgent):
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{context['evidence_url'].rstrip('/')}/api/v1/evidence/aggregate",
-                json={"incident_id": incident_id, "source_refs": context.get("source_refs", [])},
+                json={
+                    "incident_id": incident_id,
+                    "source_refs": context.get("source_refs", []),
+                    "alert_context": {
+                        "alert_name": context.get("alert_name") or context.get("query"),
+                        "summary": context.get("query") or context.get("description"),
+                        "description": context.get("description") or context.get("query"),
+                        "vendor": context.get("vendor", "vmware"),
+                        "domain": context.get("domain", "virtualization"),
+                        "category": context.get("category"),
+                        "severity": context.get("severity"),
+                        "labels": context.get("labels", {}),
+                        "object_type": context.get("object_type"),
+                    },
+                },
             )
         payload = resp.json()
         if not payload.get("success"):
@@ -51,6 +65,10 @@ class EvidenceAgent(BaseSubAgent):
             "sufficiency_score": data.get("sufficiency_score", 0.0),
             "freshness_score": data.get("freshness_score", 0.0),
             "contradictions": data.get("contradictions", []),
+            "alert_match": data.get("alert_match", {}),
+            "alert_knowledge_ids": data.get("alert_knowledge_ids", []),
+            "safe_actions": data.get("safe_actions", []),
+            "approval_actions": data.get("approval_actions", []),
         }
 
 
@@ -86,10 +104,54 @@ class TopologyAgent(BaseSubAgent):
 
 class KnowledgeAgent(BaseSubAgent):
     name = "KnowledgeAgent"
-    description = "Retrieves ranked knowledge citations"
+    description = "Retrieves alert knowledge, ranked article citations, and similar cases"
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         query = context.get("query") or ""
+        alert_match: dict[str, Any] = {}
+        alert_articles: list[dict[str, Any]] = []
+        similar_cases: list[dict[str, Any]] = []
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{context['knowledge_url'].rstrip('/')}/knowledge/alert-match",
+                    json={
+                        "alert_name": query,
+                        "summary": query,
+                        "vendor": context.get("vendor", "vmware"),
+                        "domain": context.get("domain", "virtualization"),
+                        "severity": context.get("severity"),
+                        "evidence_present": context.get("present_evidence_types", []),
+                        "top_k": 5,
+                    },
+                )
+            payload = resp.json()
+            if payload.get("success"):
+                alert_match = payload.get("data", {}) or {}
+                for match in (alert_match.get("matches") or [])[:5]:
+                    item = match.get("item") if isinstance(match, dict) else {}
+                    if not isinstance(item, dict):
+                        continue
+                    alert_articles.append(
+                        {
+                            "id": item.get("id"),
+                            "title": item.get("alert_name"),
+                            "content_summary": " | ".join(item.get("possible_causes") or []),
+                            "source": "alert_knowledge",
+                            "status": item.get("status"),
+                            "tags": item.get("tags") or [],
+                            "confidence_score": item.get("trust_score"),
+                            "relevance_score": match.get("relevance_score"),
+                            "why_selected": match.get("why_selected"),
+                            "missing_evidence": match.get("missing_evidence") or [],
+                            "diagnostic_steps": item.get("diagnostic_steps") or [],
+                            "automation": item.get("automation") or {},
+                        }
+                    )
+        except Exception:
+            alert_match = context.get("alert_match", {}) if isinstance(context.get("alert_match"), dict) else {}
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 f"{context['knowledge_url'].rstrip('/')}/knowledge/articles",
@@ -97,9 +159,46 @@ class KnowledgeAgent(BaseSubAgent):
             )
         payload = resp.json()
         if not payload.get("success"):
-            return {"ok": False, "error": payload.get("error") or "knowledge retrieval failed", "articles": []}
+            return {"ok": False, "error": payload.get("error") or "knowledge retrieval failed", "articles": alert_articles}
         items = (payload.get("data") or {}).get("items", []) or []
-        return {"ok": True, "articles": items[:5]}
+        try:
+            cases_url = context.get("cases_url")
+            if cases_url:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    case_resp = await client.post(
+                        f"{str(cases_url).rstrip('/')}/api/v1/cases/similar",
+                        json={
+                            "title": query,
+                            "summary": query,
+                            "tags": ["vmware"],
+                            "knowledge_refs": [
+                                str(x.get("id"))
+                                for x in alert_articles
+                                if x.get("id")
+                            ],
+                            "limit": 5,
+                        },
+                    )
+                case_payload = case_resp.json()
+                if case_payload.get("success"):
+                    similar_cases = (case_payload.get("data") or {}).get("items", []) or []
+        except Exception:
+            similar_cases = []
+        combined = alert_articles + items[: max(0, 5 - len(alert_articles))]
+        return {
+            "ok": True,
+            "articles": combined[:5],
+            "alert_match": alert_match or context.get("alert_match", {}),
+            "alert_knowledge_ids": [
+                str(x.get("id"))
+                for x in alert_articles
+                if x.get("id")
+            ] or context.get("alert_knowledge_ids", []),
+            "safe_actions": (alert_match.get("safe_actions") or context.get("safe_actions") or []),
+            "approval_actions": (alert_match.get("approval_actions") or context.get("approval_actions") or []),
+            "similar_cases": similar_cases,
+            "similar_case_ids": [str(x.get("id")) for x in similar_cases if x.get("id")],
+        }
 
 
 class RootCauseAgent(BaseSubAgent):
@@ -199,15 +298,16 @@ class RootCauseAgent(BaseSubAgent):
                     "summary": "主假设存在反证且仍有矛盾未解释。",
                     "evidence_refs": counter_refs,
                 }
-            elif missing_critical:
+            elif missing_critical or sufficiency_score < 0.6:
                 conclusion_status = "insufficient_evidence"
                 winning["status"] = "inconclusive"
                 counter_result = {
                     "status": "inconclusive",
                     "checked_hypothesis_id": winning.get("id"),
-                    "summary": "仍缺关键证据，不能确认唯一根因。",
+                    "summary": "仍缺关键证据或证据充分性不足，不能确认唯一根因。",
                     "evidence_refs": counter_refs,
                 }
+                winning["confidence"] = min(float(winning.get("confidence") or 0.18), 0.59)
             elif float(winning.get("confidence") or 0.0) >= 0.78:
                 conclusion_status = "confirmed"
                 winning["status"] = "confirmed"
@@ -270,6 +370,12 @@ class RemediationAgent(BaseSubAgent):
         root = context.get("root_cause") or {}
         summary = str(root.get("summary") or "")
         actions: list[str] = []
+        safe_actions = context.get("safe_actions") or []
+        approval_actions = context.get("approval_actions") or []
+        if safe_actions:
+            actions.append("Safe collection actions: " + ", ".join(str(x) for x in safe_actions[:5]))
+        if approval_actions:
+            actions.append("Approval-required actions: " + ", ".join(str(x) for x in approval_actions[:5]))
         if "资源" in summary or "压力" in summary:
             actions.extend(
                 [
@@ -284,7 +390,7 @@ class RemediationAgent(BaseSubAgent):
                     "对异常对象执行只读健康检查，并评估是否进入审批处置。",
                 ]
             )
-        return {"ok": True, "recommended_actions": actions}
+        return {"ok": True, "recommended_actions": actions, "safe_actions": safe_actions, "approval_actions": approval_actions}
 
 
 async def run_multi_agent_rootcause(context: dict[str, Any]) -> dict[str, Any]:
@@ -340,6 +446,12 @@ async def run_multi_agent_rootcause(context: dict[str, Any]) -> dict[str, Any]:
         "evidence_refs": state.get("evidence_refs", []),
         "topology": state.get("topology", {}),
         "knowledge_articles": state.get("articles", []),
+        "alert_match": state.get("alert_match", {}),
+        "alert_knowledge_ids": state.get("alert_knowledge_ids", []),
+        "similar_cases": state.get("similar_cases", []),
+        "similar_case_ids": state.get("similar_case_ids", []),
+        "safe_actions": state.get("safe_actions", []),
+        "approval_actions": state.get("approval_actions", []),
         "coverage": state.get("coverage"),
         "evidence_errors": state.get("errors", []),
     }

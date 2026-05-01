@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { cn, formatDate } from "@/lib/utils";
 import { apiFetch } from "@/lib/api";
 import { mockIncidents, mockEvidences, mockIncidentTimeline } from "@/lib/mock-data";
+import { type Incident } from "@opspilot/shared-types";
 import Link from "next/link";
 
 interface DiagnosisData {
@@ -27,6 +28,62 @@ interface DiagnosisData {
   recommended_actions: string[];
   tool_traces: Array<{ tool_name: string; gateway: string; input_summary: string; output_summary: string; duration_ms: number; status: string; timestamp: string }>;
   created_at?: string;
+}
+
+interface IncidentDetailData {
+  id: string;
+  title?: string;
+  status?: Incident["status"];
+  severity?: Incident["severity"];
+  summary?: string;
+  first_seen_at?: string;
+  last_updated_at?: string;
+  affected_objects?: Incident["affected_objects"];
+  root_cause?: Incident["root_cause"] | null;
+  root_cause_candidates?: Incident["root_cause_candidates"];
+  recommended_actions?: string[];
+  evidence_refs?: string[];
+  analysis?: {
+    status?: string;
+    final_conclusion?: string;
+    recommended_actions?: string[];
+    analysis_process?: Array<{
+      stage?: string;
+      tool_name?: string;
+      input_summary?: string;
+      output_summary?: string;
+      finding?: string;
+      decision?: string;
+      timestamp?: string;
+      status?: string;
+    }>;
+  };
+  memory_context?: {
+    similar_incidents?: Array<{ memory?: { id: string; title: string; summary: string }; score?: number }>;
+    recommended_actions?: string[];
+    risk_signals?: string[];
+    status?: string;
+  };
+  memory_write?: {
+    status?: string;
+    should_write_memory?: boolean;
+    memory_items?: Array<{ id: string; title: string; summary: string }>;
+    error?: string;
+  };
+  details?: {
+    memory_context?: {
+      similar_incidents?: Array<{ memory?: { id: string; title: string; summary: string }; score?: number }>;
+      recommended_actions?: string[];
+      risk_signals?: string[];
+      status?: string;
+    };
+    memory_write?: {
+      status?: string;
+      should_write_memory?: boolean;
+      memory_items?: Array<{ id: string; title: string; summary: string }>;
+      error?: string;
+    };
+  };
 }
 
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
@@ -54,8 +111,17 @@ export default function DiagnosisPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const diagnosisId = searchParams.get("diagnosis_id");
+  const incidentIdParam = searchParams.get("incident_id");
+  const targetIdParam = searchParams.get("target_id");
+  const targetNameParam = searchParams.get("target_name");
+  const targetTypeParam = searchParams.get("target_type");
+  const summaryParam = searchParams.get("summary");
+  const missingEvidenceParam = searchParams.get("missing_evidence");
+  const recommendedActionsParam = searchParams.get("recommended_actions");
   const [diagData, setDiagData] = useState<DiagnosisData | null>(null);
+  const [incidentDetail, setIncidentDetail] = useState<IncidentDetailData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [incidentLoading, setIncidentLoading] = useState(false);
   const [actionRunningIndex, setActionRunningIndex] = useState<number | null>(null);
   const [actionExecResult, setActionExecResult] = useState<{
     action: string;
@@ -77,30 +143,101 @@ export default function DiagnosisPage() {
       .finally(() => setLoading(false));
   }, [diagnosisId]);
 
-  // Choose data source: API diagnosis or mock fallback
-  const useMock = !diagnosisId || !diagData;
+  useEffect(() => {
+    if (!incidentIdParam) return;
+    setIncidentLoading(true);
+    apiFetch<{ success: boolean; data?: IncidentDetailData }>(`/api/v1/incidents/${incidentIdParam}`)
+      .then((res) => setIncidentDetail(res.data ?? null))
+      .catch(() => setIncidentDetail(null))
+      .finally(() => setIncidentLoading(false));
+  }, [incidentIdParam]);
+
+  const incidentDiagnosis: DiagnosisData | null = incidentDetail
+    ? {
+        diagnosis_id: `incident-${incidentDetail.id}`,
+        description: incidentDetail.title || incidentDetail.summary || targetNameParam || "故障事件诊断",
+        assistant_message:
+          incidentDetail.analysis?.final_conclusion ||
+          incidentDetail.root_cause?.summary ||
+          incidentDetail.summary ||
+          "已从故障事件中心加载诊断上下文。",
+        root_cause_candidates:
+          incidentDetail.root_cause_candidates?.length
+            ? incidentDetail.root_cause_candidates.map((rc) => ({
+                description: rc.description,
+                confidence: rc.confidence,
+                category: rc.category ?? "unknown",
+              }))
+            : incidentDetail.root_cause
+              ? [
+                  {
+                    description: incidentDetail.root_cause.summary,
+                    confidence: incidentDetail.root_cause.confidence,
+                    category: "root_cause",
+                  },
+                ]
+              : [],
+        evidence_refs: incidentDetail.evidence_refs ?? incidentDetail.root_cause?.evidence_refs ?? [],
+        evidences: (incidentDetail.evidence_refs ?? []).map((ref) => ({
+          evidence_id: ref,
+          source_type: "evidence",
+          summary: `诊断证据引用：${ref}`,
+          confidence: 0.7,
+          timestamp: incidentDetail.last_updated_at || new Date().toISOString(),
+        })),
+        recommended_actions: incidentDetail.analysis?.recommended_actions ?? incidentDetail.recommended_actions ?? [],
+        tool_traces: (incidentDetail.analysis?.analysis_process ?? [])
+          .filter((step) => step.tool_name || step.output_summary || step.finding)
+          .map((step) => ({
+            tool_name: step.tool_name || step.stage || "analysis",
+            gateway: "event-ingestion",
+            input_summary: step.input_summary || step.decision || "",
+            output_summary: step.output_summary || step.finding || step.decision || "",
+            duration_ms: 0,
+            status: step.status === "failed" ? "failed" : "success",
+            timestamp: step.timestamp || incidentDetail.last_updated_at || new Date().toISOString(),
+          })),
+        created_at: incidentDetail.analysis?.analysis_process?.[0]?.timestamp || incidentDetail.first_seen_at,
+      }
+    : null;
+  const activeDiagnosis = diagData ?? incidentDiagnosis;
+
+  // Choose data source: chat diagnosis, incident analysis, or legacy demo fallback only for bare /diagnosis.
+  const useMock = !incidentIdParam && !diagnosisId && !activeDiagnosis;
   const incident = useMock ? mockIncidents[0] : null;
   const evidences = useMock
     ? mockEvidences.filter((e) => incident!.evidence_refs.includes(e.evidence_id))
-    : diagData!.evidences;
+    : activeDiagnosis?.evidences ?? [];
   const rootCauseCandidates = useMock
     ? incident!.root_cause_candidates
-    : diagData!.root_cause_candidates.map((rc, i) => ({
+    : (activeDiagnosis?.root_cause_candidates ?? []).map((rc, i) => ({
         id: `rc-${i}`,
         description: rc.description,
         confidence: rc.confidence,
         category: rc.category ?? "unknown",
-        evidence_refs: diagData!.evidence_refs,
+        evidence_refs: activeDiagnosis?.evidence_refs ?? [],
       }));
   const recommendedActions = useMock
     ? incident!.recommended_actions
-    : diagData!.recommended_actions;
-  const toolTraces = useMock ? [] : diagData!.tool_traces;
-  const title = useMock ? incident!.title : diagData!.description;
-  const diagId = useMock ? undefined : diagData!.diagnosis_id;
-  const sessionId = useMock ? undefined : diagData!.session_id;
-  const incidentId = useMock ? incident?.id : undefined;
-  const primaryTarget = useMock ? incident?.affected_objects?.[0] : undefined;
+    : activeDiagnosis?.recommended_actions ?? [];
+  const prefilledMissingEvidence = (missingEvidenceParam ? missingEvidenceParam.split("||") : []).filter(Boolean);
+  const prefilledRecommendedActions = (recommendedActionsParam ? recommendedActionsParam.split("||") : []).filter(Boolean);
+  const mergedRecommendedActions = prefilledRecommendedActions.length > 0
+    ? Array.from(new Set([...prefilledRecommendedActions, ...recommendedActions]))
+    : recommendedActions;
+  const toolTraces = useMock ? [] : activeDiagnosis?.tool_traces ?? [];
+  const title = useMock ? incident!.title : (activeDiagnosis?.description || incidentDetail?.title || targetNameParam || "诊断工作台");
+  const diagId = useMock ? undefined : activeDiagnosis?.diagnosis_id;
+  const sessionId = useMock ? undefined : activeDiagnosis?.session_id;
+  const incidentId = useMock ? incident?.id : (incidentIdParam || undefined);
+  const memoryContext = incidentDetail?.details?.memory_context ?? incidentDetail?.memory_context;
+  const memoryWrite = incidentDetail?.details?.memory_write ?? incidentDetail?.memory_write;
+  const primaryTarget = useMock
+    ? incident?.affected_objects?.[0]
+    : (incidentDetail?.affected_objects?.[0] ??
+      (targetIdParam && targetNameParam && targetTypeParam
+        ? { object_id: targetIdParam, object_name: targetNameParam, object_type: targetTypeParam }
+        : undefined));
   const executionHref = (() => {
     const query = new URLSearchParams();
     if (incidentId) query.set("incident_id", incidentId);
@@ -266,7 +403,7 @@ export default function DiagnosisPage() {
           throw new Error(inventory.error || "获取 vCenter 资源失败");
         }
         const hosts = (inventory.data?.hosts || []) as Array<Record<string, unknown>>;
-        const text = `${title} ${diagData?.description || ""} ${actionText}`;
+        const text = `${title} ${activeDiagnosis?.description || ""} ${actionText}`;
         const ip = text.match(IPV4_RE)?.[0];
         if (ip) {
           const m = hosts.find((h) => String(h.name || "").includes(ip));
@@ -321,7 +458,7 @@ export default function DiagnosisPage() {
     }
   }
 
-  if (loading) {
+  if (loading || incidentLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
@@ -415,24 +552,74 @@ export default function DiagnosisPage() {
           )}
 
           {!useMock && (
-            <Card>
-              <CardHeader>
-                <CardTitle>诊断信息</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2.5">
-                <p className="text-xs text-slate-700 leading-relaxed">{diagData!.description}</p>
-                {diagData!.created_at && (
-                  <p className="text-[11px] text-slate-400 flex items-center gap-1">
-                    <Clock className="h-3 w-3" /> {formatDate(diagData!.created_at)}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>诊断信息</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2.5">
+                  <p className="text-xs text-slate-700 leading-relaxed">{activeDiagnosis?.description || summaryParam || "已接收诊断上下文。"}</p>
+                  {activeDiagnosis?.created_at && (
+                    <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <Clock className="h-3 w-3" /> {formatDate(activeDiagnosis.created_at)}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
           )}
         </div>
 
         {/* Center Column: Analysis */}
         <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
+          {(incidentId || primaryTarget || prefilledMissingEvidence.length > 0 || prefilledRecommendedActions.length > 0 || summaryParam) && (
+            <Card>
+              <CardHeader>
+                <CardTitle>来自故障事件中心的上下文</CardTitle>
+                <span className="text-xs text-slate-400">已自动带入事件、目标对象、缺失证据和建议动作</span>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {(incidentId || primaryTarget) && (
+                  <div className="grid gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700 md:grid-cols-2">
+                    {incidentId && <div>关联事件：<span className="font-mono text-xs text-slate-500">{incidentId}</span></div>}
+                    {primaryTarget && (
+                      <div>
+                        目标对象：{primaryTarget.object_name}
+                        <Badge variant="neutral" className="ml-2">{primaryTarget.object_type}</Badge>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {summaryParam && (
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-slate-700">
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-blue-700">当前结论摘要</div>
+                    <div>{summaryParam}</div>
+                  </div>
+                )}
+                {prefilledMissingEvidence.length > 0 && (
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">建议补充的证据</div>
+                    <div className="flex flex-wrap gap-2">
+                      {prefilledMissingEvidence.map((item) => (
+                        <Badge key={item} variant="warning">{item}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {prefilledRecommendedActions.length > 0 && (
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">事件中心传入的建议动作</div>
+                    <div className="space-y-1">
+                      {prefilledRecommendedActions.map((item, index) => (
+                        <div key={`${item}-${index}`} className="text-sm text-slate-700">
+                          {index + 1}. {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Root cause candidates */}
           <Card>
             <CardHeader>
@@ -440,7 +627,9 @@ export default function DiagnosisPage() {
               <span className="text-xs text-slate-400">AI 可解释性输出</span>
             </CardHeader>
             <CardContent className="space-y-3">
-              {rootCauseCandidates.map((rc, i) => (
+              {rootCauseCandidates.length === 0 ? (
+                <p className="text-xs text-slate-400">暂无根因候选，请先在故障事件中心触发分析。</p>
+              ) : rootCauseCandidates.map((rc, i) => (
                 <div
                   key={rc.id ?? i}
                   className={cn(
@@ -560,7 +749,7 @@ export default function DiagnosisPage() {
               <CardTitle>建议动作</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {recommendedActions.map((a, i) => (
+              {mergedRecommendedActions.map((a, i) => (
                 <div
                   key={i}
                   className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5 hover:border-blue-200 hover:bg-blue-50/40 transition-colors group"
@@ -641,14 +830,48 @@ export default function DiagnosisPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="evidence-block">
-                <p className="font-semibold text-slate-700 mb-1">CASE-20260320</p>
-                <p className="text-slate-600">类似 Java GC 风暴导致主机 CPU 飙升</p>
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-slate-400">2026-03-20</span>
-                  <Badge variant="info">相似度 82%</Badge>
+              {memoryContext?.similar_incidents && memoryContext.similar_incidents.length > 0 ? (
+                <div className="space-y-2">
+                  {memoryContext.similar_incidents.slice(0, 3).map((hit) => (
+                    <div key={hit.memory?.id ?? String(hit.score)} className="evidence-block">
+                      <p className="font-semibold text-slate-700 mb-1">{hit.memory?.title ?? "Historical memory"}</p>
+                      <p className="text-slate-600">{hit.memory?.summary ?? "-"}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Badge variant="info">score {Math.round((hit.score ?? 0) * 100)}%</Badge>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              ) : (
+                <p className="text-xs text-slate-400">暂无相似历史故障</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-1.5">
+                <Archive className="h-3.5 w-3.5 text-slate-400" /> Memory Write
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {!memoryWrite ? (
+                <p className="text-xs text-slate-400">等待诊断完成后写入长期记忆</p>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={memoryWrite.status === "written" ? "success" : "neutral"}>{memoryWrite.status ?? "unknown"}</Badge>
+                    <span className="text-xs text-slate-500">should write: {String(memoryWrite.should_write_memory)}</span>
+                  </div>
+                  {memoryWrite.error && <p className="text-xs text-red-600">{memoryWrite.error}</p>}
+                  {(memoryWrite.memory_items ?? []).map((item) => (
+                    <div key={item.id} className="rounded-lg border border-slate-100 bg-slate-50 p-2 text-xs">
+                      <div className="font-semibold text-slate-700">{item.title}</div>
+                      <div className="mt-1 text-slate-500">{item.summary}</div>
+                    </div>
+                  ))}
+                </>
+              )}
             </CardContent>
           </Card>
 

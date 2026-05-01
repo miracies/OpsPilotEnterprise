@@ -1,0 +1,2 @@
+﻿host_id,name,cpu_current_percent,cpu_avg_percent,cpu_peak_percent,cpu_high_minutes,memory_current_percent,memory_avg_percent,memory_peak_percent,memory_high_minutes,primary_pressure,source,window
+host-1,esx01.lab.local,30.0,25.0,40.0,0,50.0,45.0,60.0,0,,prometheus,1h

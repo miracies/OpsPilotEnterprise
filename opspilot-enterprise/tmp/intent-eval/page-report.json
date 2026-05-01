@@ -1,0 +1,136 @@
+{
+  "generated_at": "2026-04-22T16:03:55.756Z",
+  "summary": {
+    "passed": 3,
+    "failed": 4
+  },
+  "results": [
+    {
+      "case_id": "J001",
+      "input": "分析主机 esx06.vstecs.lab 健康情况",
+      "session_id": "sess-779e88f4",
+      "status": "passed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": true,
+        "clarify_visible": true,
+        "followup_visible": true
+      },
+      "clarify_clicked": false,
+      "last_kind": "text",
+      "last_status": "completed",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J001.png",
+      "root_causes": []
+    },
+    {
+      "case_id": "J002",
+      "input": "分析 esx06 健康情况",
+      "session_id": "sess-dd287dda",
+      "status": "passed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": true,
+        "clarify_visible": true,
+        "followup_visible": true
+      },
+      "clarify_clicked": false,
+      "last_kind": "text",
+      "last_status": "completed",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J002.png",
+      "root_causes": []
+    },
+    {
+      "case_id": "J003",
+      "input": "分析 esx0 健康情况",
+      "session_id": "sess-fd478367",
+      "status": "failed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": false,
+        "clarify_visible": false,
+        "followup_visible": false
+      },
+      "clarify_clicked": false,
+      "last_kind": "clarify",
+      "last_status": "completed",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J003.png",
+      "root_causes": [
+        "ui_render_gap"
+      ]
+    },
+    {
+      "case_id": "J005",
+      "input": "vcenter生产环境有多少虚拟机",
+      "session_id": "sess-a5a2c3c5",
+      "status": "failed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": false,
+        "clarify_visible": true,
+        "followup_visible": true
+      },
+      "clarify_clicked": false,
+      "last_kind": "text",
+      "last_status": "in_progress",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J005.png",
+      "root_causes": [
+        "ui_render_gap"
+      ]
+    },
+    {
+      "case_id": "J006",
+      "input": "How do I download ESXi version 9.0.3?",
+      "session_id": "sess-e0394d87",
+      "status": "passed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": true,
+        "clarify_visible": true,
+        "followup_visible": true
+      },
+      "clarify_clicked": false,
+      "last_kind": "text",
+      "last_status": "completed",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J006.png",
+      "root_causes": []
+    },
+    {
+      "case_id": "J007",
+      "input": "虚拟机热迁移是否会丢包",
+      "session_id": "sess-7a00cc49",
+      "status": "failed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": false,
+        "clarify_visible": true,
+        "followup_visible": true
+      },
+      "clarify_clicked": false,
+      "last_kind": "text",
+      "last_status": "in_progress",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J007.png",
+      "root_causes": [
+        "ui_render_gap"
+      ]
+    },
+    {
+      "case_id": "J008",
+      "input": "restart service",
+      "session_id": "sess-34e1dca5",
+      "status": "failed",
+      "checks": {
+        "timeline_visible": true,
+        "expected_text": false,
+        "clarify_visible": false,
+        "followup_visible": true
+      },
+      "clarify_clicked": false,
+      "last_kind": "clarify",
+      "last_status": "completed",
+      "screenshot": "E:\\work\\git\\OpsPilot\\opspilot-enterprise\\tmp\\intent-eval\\J008.png",
+      "root_causes": [
+        "ui_render_gap"
+      ]
+    }
+  ]
+}

@@ -3,6 +3,8 @@ import os
 from conftest import load_service_app
 from fastapi.testclient import TestClient
 
+os.environ.setdefault("VMWARE_USE_MOCK_FALLBACK", "true")
+
 SERVICE_DIR = os.path.join(os.path.dirname(__file__), "..", "services", "vmware-skill-gateway")
 _app = load_service_app(SERVICE_DIR)
 client = TestClient(_app)
@@ -26,6 +28,10 @@ def test_get_vcenter_inventory():
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
+    inventory = data["data"]
+    assert inventory["hosts"][0]["cpu_usage_percent"] is not None
+    assert inventory["datastores"][0]["host_ids"]
+    assert inventory["datastores"][0]["free_percent"] is not None
 
 
 def test_query_events():
@@ -40,3 +46,11 @@ def test_invoke_inventory():
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
+
+
+def test_vmware_metrics_endpoint():
+    resp = client.get("/metrics/vmware")
+    assert resp.status_code == 200
+    text = resp.text
+    assert "opspilot_vmware_host_cpu_usage_percent" in text
+    assert "opspilot_vmware_datastore_free_percent" in text

@@ -62,6 +62,17 @@ def _overall_status(obj: Any) -> str:
     return str(status) if status is not None else "gray"
 
 
+def _safe_percent(used: Any, total: Any) -> float | None:
+    try:
+        used_f = float(used)
+        total_f = float(total)
+        if total_f <= 0:
+            return None
+        return round(used_f * 100 / total_f, 2)
+    except (TypeError, ValueError):
+        return None
+
+
 def _connect(connection: VCenterConnection):
     if SmartConnect is None:
         raise RuntimeError("pyVmomi is not installed")
@@ -105,14 +116,20 @@ def _host_summary(host: Any) -> dict[str, Any]:
     summary = host.summary
     hardware = summary.hardware
     quick = summary.quickStats
+    cpu_mhz = int(hardware.cpuMhz * hardware.numCpuCores)
+    cpu_usage_mhz = int(getattr(quick, "overallCpuUsage", 0) or 0)
+    memory_mb = int(hardware.memorySize / 1024 / 1024)
+    memory_usage_mb = int(getattr(quick, "overallMemoryUsage", 0) or 0)
     return {
         "host_id": _moid(host),
         "name": host.name,
         "cluster_id": _moid(host.parent) if getattr(host, "parent", None) else None,
-        "cpu_mhz": int(hardware.cpuMhz * hardware.numCpuCores),
-        "cpu_usage_mhz": int(getattr(quick, "overallCpuUsage", 0) or 0),
-        "memory_mb": int(hardware.memorySize / 1024 / 1024),
-        "memory_usage_mb": int(getattr(quick, "overallMemoryUsage", 0) or 0),
+        "cpu_mhz": cpu_mhz,
+        "cpu_usage_mhz": cpu_usage_mhz,
+        "cpu_usage_percent": _safe_percent(cpu_usage_mhz, cpu_mhz),
+        "memory_mb": memory_mb,
+        "memory_usage_mb": memory_usage_mb,
+        "memory_usage_percent": _safe_percent(memory_usage_mb, memory_mb),
         "vm_count": len(getattr(host, "vm", [])),
         "connection_state": str(summary.runtime.connectionState),
         "power_state": str(summary.runtime.powerState),
@@ -162,13 +179,119 @@ def _cluster_summary(cluster: Any) -> dict[str, Any]:
 
 def _datastore_summary(ds: Any) -> dict[str, Any]:
     summary = ds.summary
+    hosts = list(getattr(ds, "host", []) or [])
+    host_refs = [getattr(item, "key", None) for item in hosts]
+    host_ids = [_moid(host) for host in host_refs if host is not None]
+    host_names = [getattr(host, "name", "") for host in host_refs if host is not None]
+    capacity_gb = round((summary.capacity or 0) / 1024 / 1024 / 1024, 2)
+    free_gb = round((summary.freeSpace or 0) / 1024 / 1024 / 1024, 2)
     return {
         "id": _moid(ds),
         "name": summary.name,
         "type": summary.type,
-        "capacity_gb": round((summary.capacity or 0) / 1024 / 1024 / 1024, 2),
-        "free_gb": round((summary.freeSpace or 0) / 1024 / 1024 / 1024, 2),
+        "capacity_gb": capacity_gb,
+        "free_gb": free_gb,
+        "free_percent": _safe_percent(free_gb, capacity_gb),
+        "host_ids": host_ids,
+        "host_names": host_names,
+        "vm_count": len(getattr(ds, "vm", []) or []),
     }
+
+
+def _vm_inventory_summary(vm: Any) -> dict[str, Any]:
+    runtime = vm.summary.runtime
+    datastores = list(getattr(vm, "datastore", []) or [])
+    return {
+        "vm_id": _moid(vm),
+        "name": vm.summary.config.name,
+        "power_state": str(runtime.powerState),
+        "host_id": _moid(runtime.host) if getattr(runtime, "host", None) else None,
+        "host_name": runtime.host.name if getattr(runtime, "host", None) else None,
+        "cluster_id": _moid(runtime.host.parent) if getattr(runtime, "host", None) and getattr(runtime.host, "parent", None) else None,
+        "datastore_ids": [_moid(ds) for ds in datastores],
+        "datastore_names": [ds.name for ds in datastores if getattr(ds, "name", None)],
+    }
+
+
+def _metric_unit(metric: str) -> str:
+    return {
+        "cpu_usage_percent": "percent",
+        "cpu_capacity_mhz": "mhz",
+        "memory_usage_percent": "percent",
+        "memory_capacity_mb": "mb",
+        "datastore_free_percent": "percent",
+        "datastore_capacity_gb": "gb",
+        "datastore_iops": "iops",
+        "datastore_latency_ms": "ms",
+        "datastore_throughput_mbps": "mbps",
+        "cpu.usage": "mhz",
+        "cpu.usage.average": "mhz",
+        "memory.usage": "mb",
+        "mem.usage.average": "mb",
+    }.get(metric, "count")
+
+
+def _metric_value_from_row(row: dict[str, Any], metric: str) -> float | None:
+    try:
+        if metric in {"cpu_usage_percent"}:
+            if row.get("cpu_usage_percent") is not None:
+                return round(float(row["cpu_usage_percent"]), 2)
+            return _safe_percent(row.get("cpu_usage_mhz"), row.get("cpu_mhz"))
+        if metric in {"cpu_capacity_mhz"}:
+            return round(float(row.get("cpu_mhz")), 2)
+        if metric in {"cpu.usage", "cpu.usage.average"}:
+            return round(float(row.get("cpu_usage_mhz")), 2)
+        if metric in {"memory_usage_percent"}:
+            if row.get("memory_usage_percent") is not None:
+                return round(float(row["memory_usage_percent"]), 2)
+            return _safe_percent(row.get("memory_usage_mb"), row.get("memory_mb"))
+        if metric in {"memory_capacity_mb"}:
+            return round(float(row.get("memory_mb")), 2)
+        if metric in {"memory.usage", "mem.usage.average"}:
+            return round(float(row.get("memory_usage_mb")), 2)
+        if metric == "datastore_free_percent":
+            return _safe_percent(row.get("free_gb"), row.get("capacity_gb"))
+        if metric == "datastore_capacity_gb":
+            return round(float(row.get("capacity_gb")), 2)
+        if row.get(metric) is not None:
+            return round(float(row.get(metric)), 2)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _perf_counter_keys(metric: str) -> list[str]:
+    return {
+        "cpu_usage_percent": ["cpu.usage.average"],
+        "memory_usage_percent": ["mem.usage.average"],
+        "datastore_iops": ["datastore.numberReadAveraged.average", "datastore.numberWriteAveraged.average"],
+        "datastore_latency_ms": ["datastore.totalReadLatency.average", "datastore.totalWriteLatency.average"],
+        "datastore_throughput_mbps": ["datastore.read.average", "datastore.write.average"],
+    }.get(metric, [metric] if "." in metric else [])
+
+
+def _perf_counter_map(perf_manager: Any) -> dict[str, int]:
+    counters: dict[str, int] = {}
+    for counter in getattr(perf_manager, "perfCounter", []) or []:
+        group = getattr(getattr(counter, "groupInfo", None), "key", "")
+        name = getattr(getattr(counter, "nameInfo", None), "key", "")
+        rollup = getattr(counter, "rollupType", "")
+        key = f"{group}.{name}.{rollup}"
+        counters[key] = int(getattr(counter, "key", 0) or 0)
+    return counters
+
+
+def _normalize_perf_value(metric: str, value: Any) -> float:
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if metric in {"cpu_usage_percent", "memory_usage_percent"} and raw > 100:
+        return raw / 100.0
+    if metric == "datastore_throughput_mbps":
+        # vCenter datastore read/write counters are commonly KBps.
+        return raw / 1024.0
+    return raw
 
 
 class VCenterService:
@@ -238,10 +361,7 @@ class VCenterService:
             "datacenters": [{"id": _moid(dc), "name": dc.name} for dc in datacenters],
             "clusters": [_cluster_summary(cluster) for cluster in clusters],
             "hosts": [_host_summary(host) for host in hosts],
-            "virtual_machines": [
-                {"vm_id": _moid(vm), "name": vm.summary.config.name, "power_state": str(vm.summary.runtime.powerState)}
-                for vm in vms
-            ],
+            "virtual_machines": [_vm_inventory_summary(vm) for vm in vms],
             "datastores": [_datastore_summary(ds) for ds in datastores],
         }
 
@@ -289,9 +409,9 @@ class VCenterService:
         for host in _get_objects(content, vim.HostSystem):
             if _moid(host) == host_id:
                 data = _host_summary(host)
-                data["cpu_usage_percent"] = round(100 * data["cpu_usage_mhz"] / data["cpu_mhz"], 2) if data["cpu_mhz"] else 0
-                data["memory_usage_percent"] = round(100 * data["memory_usage_mb"] / data["memory_mb"], 2) if data["memory_mb"] else 0
                 data["vms"] = [{"vm_id": _moid(vm), "name": vm.summary.config.name} for vm in getattr(host, "vm", [])]
+                datastores = list(getattr(host, "datastore", []) or [])
+                data["datastores"] = [_datastore_summary(ds) for ds in datastores]
                 return data
         return None
 
@@ -355,20 +475,78 @@ class VCenterService:
             for idx, event in enumerate(events[:50])
         ]
 
-    async def query_metrics(self, object_id: str, metric: str) -> dict[str, Any]:
+    async def query_metrics(
+        self,
+        object_id: str,
+        metric: str,
+        *,
+        object_type: str | None = None,
+        metrics: list[str] | None = None,
+        range_minutes: int = 0,
+        step_seconds: int = 300,
+        source: str = "vcenter",
+    ) -> dict[str, Any]:
         def _impl():
-            return self._with_client(lambda content, _: self._query_metrics_sync(content, object_id, metric))
+            return self._with_client(
+                lambda content, _: self._query_metrics_sync(
+                    content,
+                    object_id,
+                    metric,
+                    object_type=object_type,
+                    metrics=metrics,
+                    range_minutes=range_minutes,
+                    step_seconds=step_seconds,
+                    source=source,
+                )
+            )
         try:
             return await self._run(_impl)
         except Exception:
             if os.environ.get("VMWARE_USE_MOCK_FALLBACK", "false").lower() == "true":
-                return {"object_id": object_id, "metric": metric, "unit": "percent", "series": mock_data.get_metric_series(object_id, metric)}
+                metric_names = metrics or [metric]
+                payload = {
+                    name: {
+                        "metric": name,
+                        "unit": _metric_unit(name),
+                        "series": mock_data.get_metric_series(object_id, name),
+                    }
+                    for name in metric_names
+                    if name
+                }
+                first = metric_names[0] if metric_names else metric
+                first_payload = payload.get(first, {"series": []})
+                return {
+                    "object_id": object_id,
+                    "object_type": object_type,
+                    "metric": first,
+                    "unit": first_payload.get("unit", "count"),
+                    "series": first_payload.get("series", []),
+                    "metrics": payload,
+                    "source": "mock",
+                }
             raise
 
-    def _query_metrics_sync(self, content: Any, object_id: str, metric: str) -> dict[str, Any]:
+    def _query_metrics_sync(
+        self,
+        content: Any,
+        object_id: str,
+        metric: str,
+        *,
+        object_type: str | None = None,
+        metrics: list[str] | None = None,
+        range_minutes: int = 0,
+        step_seconds: int = 300,
+        source: str = "vcenter",
+    ) -> dict[str, Any]:
+        metric_names = [item for item in (metrics or [metric]) if item]
+        if not metric_names:
+            metric_names = [metric]
         target = None
         target_type = None
-        for vim_type, label in ((vim.HostSystem, "host"), (vim.VirtualMachine, "vm")):
+        vim_types = [(vim.HostSystem, "host"), (vim.VirtualMachine, "vm"), (vim.Datastore, "datastore")]
+        if object_type:
+            vim_types = [item for item in vim_types if item[1] == object_type] or vim_types
+        for vim_type, label in vim_types:
             for obj in _get_objects(content, vim_type):
                 if _moid(obj) == object_id:
                     target = obj
@@ -379,28 +557,87 @@ class VCenterService:
         if not target:
             return {"object_id": object_id, "metric": metric, "unit": "count", "series": []}
 
-        summary = target.summary
-        quick = summary.quickStats
-        unit = "count"
-        value = 0
-        if target_type == "host" and metric in {"cpu.usage", "cpu.usage.average"}:
-            unit = "mhz"
-            value = int(getattr(quick, "overallCpuUsage", 0) or 0)
-        elif target_type == "host" and metric in {"memory.usage", "mem.usage.average"}:
-            unit = "mb"
-            value = int(getattr(quick, "overallMemoryUsage", 0) or 0)
-        elif target_type == "vm" and metric in {"cpu.usage", "cpu.usage.average"}:
-            unit = "mhz"
-            value = int(getattr(quick, "overallCpuUsage", 0) or 0)
-        elif target_type == "vm" and metric in {"memory.usage", "mem.usage.average"}:
-            unit = "mb"
-            value = int(getattr(quick, "guestMemoryUsage", 0) or 0)
+        metric_payload: dict[str, dict[str, Any]] = {}
+        for metric_name in metric_names:
+            if range_minutes > 0:
+                series = self._query_perf_series(content, target, metric_name, range_minutes, step_seconds)
+                if not series:
+                    series = self._latest_metric_series(target, target_type, metric_name)
+            else:
+                series = self._latest_metric_series(target, target_type, metric_name)
+            metric_payload[metric_name] = {
+                "metric": metric_name,
+                "unit": _metric_unit(metric_name),
+                "series": series,
+            }
+        first = metric_names[0]
+        first_payload = metric_payload[first]
         return {
             "object_id": object_id,
-            "metric": metric,
-            "unit": unit,
-            "series": [{"timestamp": datetime.now(UTC).isoformat(), "value": value}],
+            "object_type": target_type,
+            "metric": first,
+            "unit": first_payload["unit"],
+            "series": first_payload["series"],
+            "metrics": metric_payload,
+            "source": source or "vcenter",
         }
+
+    def _latest_metric_series(self, target: Any, target_type: str | None, metric: str) -> list[dict[str, Any]]:
+        timestamp = datetime.now(UTC).isoformat()
+        if target_type == "host":
+            data = _host_summary(target)
+            value = _metric_value_from_row(data, metric)
+        elif target_type == "vm":
+            data = _vm_summary(target)
+            value = _metric_value_from_row(data, metric)
+        elif target_type == "datastore":
+            data = _datastore_summary(target)
+            value = _metric_value_from_row(data, metric)
+        else:
+            value = None
+        return [{"timestamp": timestamp, "value": value}] if value is not None else []
+
+    def _query_perf_series(self, content: Any, target: Any, metric: str, range_minutes: int, step_seconds: int) -> list[dict[str, Any]]:
+        counter_keys = _perf_counter_keys(metric)
+        if not counter_keys:
+            return []
+        perf_manager = content.perfManager
+        counters = _perf_counter_map(perf_manager)
+        counter_ids = [counters[key] for key in counter_keys if key in counters]
+        if not counter_ids:
+            return []
+        start = datetime.now(UTC) - timedelta(minutes=max(1, range_minutes))
+        end = datetime.now(UTC)
+        interval = max(20, int(step_seconds or 300))
+        spec = vim.PerformanceManager.QuerySpec(
+            entity=target,
+            metricId=[vim.PerformanceManager.MetricId(counterId=counter_id, instance="") for counter_id in counter_ids],
+            startTime=start,
+            endTime=end,
+            intervalId=interval,
+            maxSample=300,
+        )
+        try:
+            results = perf_manager.QueryPerf(querySpec=[spec]) or []
+        except Exception:
+            return []
+        if not results:
+            return []
+        sample_info = list(getattr(results[0], "sampleInfo", []) or [])
+        if not sample_info:
+            return []
+        values_by_idx: dict[int, list[float]] = {}
+        for series in getattr(results[0], "value", []) or []:
+            for idx, raw in enumerate(getattr(series, "value", []) or []):
+                values_by_idx.setdefault(idx, []).append(_normalize_perf_value(metric, raw))
+        points: list[dict[str, Any]] = []
+        for idx, info in enumerate(sample_info):
+            values = values_by_idx.get(idx) or []
+            if not values:
+                continue
+            ts = getattr(info, "timestamp", datetime.now(UTC))
+            points.append({"timestamp": ts.astimezone(UTC).isoformat(), "value": round(sum(values) / len(values), 2)})
+        return points
 
     async def query_alerts(self) -> list[dict[str, Any]]:
         def _impl():

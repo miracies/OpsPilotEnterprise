@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from opspilot_schema.envelope import make_success
 
-from app.routers import execute, invoke, query
+from app.routers import execute, invoke, metrics, query
 
 CAPABILITY_TOOLS = [
     "get_vcenter_inventory",
@@ -49,3 +49,4 @@ app.include_router(api_v1)
 app.include_router(invoke.router, prefix="/api/v1")
 app.include_router(query.router, prefix="/api/v1")
 app.include_router(execute.router, prefix="/api/v1")
+app.include_router(metrics.router)

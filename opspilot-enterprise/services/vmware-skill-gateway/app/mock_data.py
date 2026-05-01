@@ -184,6 +184,29 @@ DS_BY_ID = {d["id"]: d for d in DATASTORES}
 
 
 def get_inventory() -> dict:
+    hosts = [
+        {
+            **h,
+            "cpu_usage_percent": round(100 * h["cpu_usage_mhz"] / h["cpu_mhz"], 2) if h.get("cpu_mhz") else 0,
+            "memory_usage_percent": round(100 * h["memory_usage_mb"] / h["memory_mb"], 2) if h.get("memory_mb") else 0,
+        }
+        for h in HOSTS
+    ]
+    datastores = []
+    for ds in DATASTORES:
+        host_ids = sorted({v["host_id"] for v in VMS if v["datastore_id"] == ds["id"]})
+        host_names = [HOST_BY_ID[hid]["name"] for hid in host_ids if hid in HOST_BY_ID]
+        capacity = float(ds.get("capacity_gb") or 0)
+        free = float(ds.get("free_gb") or 0)
+        datastores.append(
+            {
+                **ds,
+                "free_percent": round(free * 100 / capacity, 2) if capacity > 0 else None,
+                "host_ids": host_ids,
+                "host_names": host_names,
+                "vm_count": sum(1 for v in VMS if v["datastore_id"] == ds["id"]),
+            }
+        )
     return {
         "vcenter": "vc01.corp.local",
         "generated_at": _iso(NOW),
@@ -194,9 +217,20 @@ def get_inventory() -> dict:
             "datastore_count": len(DATASTORES),
         },
         "clusters": CLUSTERS,
-        "hosts": HOSTS,
-        "virtual_machines": [{"vm_id": v["vm_id"], "name": v["name"], "power_state": v["power_state"]} for v in VMS],
-        "datastores": DATASTORES,
+        "hosts": hosts,
+        "virtual_machines": [
+            {
+                "vm_id": v["vm_id"],
+                "name": v["name"],
+                "power_state": v["power_state"],
+                "host_id": v["host_id"],
+                "cluster_id": v["cluster_id"],
+                "datastore_ids": [v["datastore_id"]],
+                "datastore_names": [DS_BY_ID.get(v["datastore_id"], {}).get("name", "")],
+            }
+            for v in VMS
+        ],
+        "datastores": datastores,
     }
 
 

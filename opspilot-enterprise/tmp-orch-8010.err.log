@@ -1,9 +1,0 @@
-INFO:     Started server process [60784]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8010 (Press CTRL+C to quit)
-INFO:httpx:HTTP Request: POST https://open.bigmodel.cn/api/paas/v4/chat/completions "HTTP/1.1 429 Too Many Requests"
-ERROR:app.llm_client:LLM API HTTP error: 429 - {"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}
-INFO:httpx:HTTP Request: POST http://127.0.0.1:8020/api/v1/invoke/vmware.kb_search "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: POST http://127.0.0.1:8020/api/v1/invoke/vmware.kb_search "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: POST http://127.0.0.1:8020/api/v1/invoke/vmware.kb_search "HTTP/1.1 200 OK"

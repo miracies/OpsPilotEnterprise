@@ -19,6 +19,7 @@ from app.audit.router import router as audit_router
 from app.intent_recovery.router import router as intent_router
 from app.interactions.router import router as interactions_router
 from app.llm_client import DIAGNOSIS_SYSTEM_PROMPT, SYSTEM_PROMPT, chat_completion, check_llm_health
+from app.memory_rag.router import router as memory_rag_router
 from app.pipeline.orchestrate_chat_v2 import router as orchestrator_v2_router
 from app.policy.router import router as policy_router
 from app.resume.router import router as resume_router
@@ -40,6 +41,7 @@ app.include_router(policy_router)
 app.include_router(audit_router)
 app.include_router(resume_router)
 app.include_router(orchestrator_v2_router)
+app.include_router(memory_rag_router)
 
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
 CHANGE_IMPACT_SERVICE_URL = os.environ.get("CHANGE_IMPACT_SERVICE_URL", "http://127.0.0.1:8040")
@@ -47,9 +49,9 @@ RESOURCE_BFF_URL = os.environ.get("RESOURCE_BFF_URL", "http://127.0.0.1:8000")
 EVIDENCE_AGGREGATOR_URL = os.environ.get("EVIDENCE_AGGREGATOR_URL", "http://127.0.0.1:8050")
 TOPOLOGY_SERVICE_URL = os.environ.get("TOPOLOGY_SERVICE_URL", "http://127.0.0.1:8090")
 KNOWLEDGE_SERVICE_URL = os.environ.get("KNOWLEDGE_SERVICE_URL", "http://127.0.0.1:8072")
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 
 VCENTER_PROD_VM_QUERY_KEYWORDS = re.compile(
     r"(vcenter|vsphere).*(\u751f\u4ea7|prod).*(\u865a\u62df\u673a|vm).*(\u591a\u5c11|\u6570\u91cf|count)"
@@ -763,7 +765,7 @@ async def _fetch_real_context(description: str) -> dict | None:
                             "category": "infrastructure",
                         }
                     ],
-                    "recommended_actions": [
+            "recommended_actions": [
                         "检查该主机最近告警与硬件事件",
                         "核对该主机承载虚拟机的资源占用与热点分布",
                     ],
@@ -926,6 +928,7 @@ async def _run_rootcause_workflow(description: str, object_id: str | None, sessi
         "evidence_url": EVIDENCE_AGGREGATOR_URL,
         "topology_url": TOPOLOGY_SERVICE_URL,
         "knowledge_url": KNOWLEDGE_SERVICE_URL,
+        "cases_url": RESOURCE_BFF_URL,
         "source_refs": [],
     }
     try:
@@ -957,6 +960,13 @@ async def _run_rootcause_workflow(description: str, object_id: str | None, sessi
             "evidence_sufficiency": evidence_sufficiency,
             "contradictions": result.get("contradictions", []),
             "recommended_actions": result.get("recommended_actions", []),
+            "knowledge_articles": result.get("knowledge_articles", []),
+            "alert_match": result.get("alert_match", {}),
+            "alert_knowledge_ids": result.get("alert_knowledge_ids", []),
+            "similar_cases": result.get("similar_cases", []),
+            "similar_case_ids": result.get("similar_case_ids", []),
+            "safe_actions": result.get("safe_actions", []),
+            "approval_actions": result.get("approval_actions", []),
             "analysis_steps": result.get("analysis_steps", []),
             "tool_traces": [
                 {
@@ -991,6 +1001,13 @@ def _build_diagnosis(
     conclusion_status: str | None = None,
     evidence_sufficiency: dict | None = None,
     contradictions: list[dict] | None = None,
+    knowledge_articles: list[dict] | None = None,
+    alert_match: dict | None = None,
+    alert_knowledge_ids: list[str] | None = None,
+    similar_cases: list[dict] | None = None,
+    similar_case_ids: list[str] | None = None,
+    safe_actions: list[str] | None = None,
+    approval_actions: list[str] | None = None,
 ) -> dict:
     diagnosis_id = f"dg-{_uid()}"
     diag_evidences = evidences or []
@@ -1031,6 +1048,13 @@ def _build_diagnosis(
         "conclusion_status": conclusion_status,
         "evidence_sufficiency": evidence_sufficiency,
         "contradictions": contradictions or [],
+        "knowledge_articles": knowledge_articles or [],
+        "alert_match": alert_match or {},
+        "alert_knowledge_ids": alert_knowledge_ids or [],
+        "similar_cases": similar_cases or [],
+        "similar_case_ids": similar_case_ids or [],
+        "safe_actions": safe_actions or [],
+        "approval_actions": approval_actions or [],
         "recommended_actions": recommended_actions
         or [
             "补充目标对象（主机/虚机/集群）并重新执行诊断。",
@@ -1039,7 +1063,7 @@ def _build_diagnosis(
         ],
         "analysis_steps": analysis_steps or [],
         "tool_traces": diag_tool_traces,
-        "simulated_at": _now(),
+            "simulated_at": _now(),
         "created_at": _now(),
     }
 
@@ -1065,7 +1089,9 @@ async def orchestrate_diagnose(body: DiagnoseRequest) -> dict:
             or len(runtime_context.get("evidences", [])) == 0
         )
         if should_fallback_context:
-            runtime_context = await _fetch_real_context(body.description)
+            fallback_context = await _fetch_real_context(body.description)
+            if fallback_context:
+                runtime_context = fallback_context
         if not runtime_context and (VMWARE_KEYWORDS.search(body.description) or K8S_KEYWORDS.search(body.description)):
             return make_error("未获取到实时资源数据，请检查 vCenter/K8s 连接与服务状态后重试")
         evidence_source = runtime_context["evidences"] if runtime_context else []
@@ -1085,6 +1111,13 @@ async def orchestrate_diagnose(body: DiagnoseRequest) -> dict:
             root_cause_candidates=runtime_context["root_cause_candidates"] if runtime_context else None,
             recommended_actions=runtime_context["recommended_actions"] if runtime_context else None,
             analysis_steps=runtime_context.get("analysis_steps") if runtime_context else None,
+            knowledge_articles=runtime_context.get("knowledge_articles") if runtime_context else None,
+            alert_match=runtime_context.get("alert_match") if runtime_context else None,
+            alert_knowledge_ids=runtime_context.get("alert_knowledge_ids") if runtime_context else None,
+            similar_cases=runtime_context.get("similar_cases") if runtime_context else None,
+            similar_case_ids=runtime_context.get("similar_case_ids") if runtime_context else None,
+            safe_actions=runtime_context.get("safe_actions") if runtime_context else None,
+            approval_actions=runtime_context.get("approval_actions") if runtime_context else None,
         )
         return make_success(data)
     except Exception as exc:
@@ -1132,7 +1165,7 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                 )
             return make_success(
                 {
-                    "session_id": body.session_id,
+            "session_id": body.session_id,
                     "message_id": f"msg-{_uid()}",
                     "assistant_message": (
                         "已触发 vCenter 生产环境（conn-vcenter-prod）虚拟机列表导出任务，可在下方下载文件。\n"
@@ -1539,7 +1572,9 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                 or len(runtime_context.get("evidences", [])) == 0
             )
             if should_fallback_context:
-                runtime_context = await _fetch_real_context(body.message)
+                fallback_context = await _fetch_real_context(body.message)
+                if fallback_context:
+                    runtime_context = fallback_context
             if not runtime_context and (VMWARE_KEYWORDS.search(body.message) or K8S_KEYWORDS.search(body.message)):
                 return make_success(
                     {
@@ -1579,6 +1614,13 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                 conclusion_status=runtime_context.get("conclusion_status") if runtime_context else None,
                 evidence_sufficiency=runtime_context.get("evidence_sufficiency") if runtime_context else None,
                 contradictions=runtime_context.get("contradictions") if runtime_context else None,
+                knowledge_articles=runtime_context.get("knowledge_articles") if runtime_context else None,
+                alert_match=runtime_context.get("alert_match") if runtime_context else None,
+                alert_knowledge_ids=runtime_context.get("alert_knowledge_ids") if runtime_context else None,
+                similar_cases=runtime_context.get("similar_cases") if runtime_context else None,
+                similar_case_ids=runtime_context.get("similar_case_ids") if runtime_context else None,
+                safe_actions=runtime_context.get("safe_actions") if runtime_context else None,
+                approval_actions=runtime_context.get("approval_actions") if runtime_context else None,
             )
             return make_success(
                 {
@@ -1599,6 +1641,13 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
                     "evidences": diag["evidences"],
                     "analysis_steps": diag.get("analysis_steps", []),
                     "recommended_actions": diag["recommended_actions"],
+                    "knowledge_articles": diag.get("knowledge_articles", []),
+                    "alert_match": diag.get("alert_match", {}),
+                    "alert_knowledge_ids": diag.get("alert_knowledge_ids", []),
+                    "similar_cases": diag.get("similar_cases", []),
+                    "similar_case_ids": diag.get("similar_case_ids", []),
+                    "safe_actions": diag.get("safe_actions", []),
+                    "approval_actions": diag.get("approval_actions", []),
                     "tool_traces": diag["tool_traces"],
                     "reasoning_summary": _reasoning_summary(
                         "用户希望进行诊断分析。",
@@ -1721,4 +1770,3 @@ async def orchestrate_chat(body: ChatRequest) -> dict:
     except Exception as exc:
         logger.exception("orchestrate_chat error")
         return make_error(str(exc))
-

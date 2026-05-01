@@ -1,0 +1,211 @@
+OP
+OpsPilot
+Enterprise
+
+概览
+
+驾驶舱
+AI 对话
+
+故障与诊断
+
+故障事件
+诊断工作台
+
+变更与执行
+
+变更分析
+执行申请
+审批中心
+
+运营
+
+值班通知
+审计中心
+证据中心
+案例归档
+
+平台
+
+Tool Gateway
+资源连接
+密钥管理
+vCenter 资源
+K8s 资源
+拓扑视图
+知识管理
+策略管理
+Agent 视图
+系统配置
+升级管理
+
+v0.2.0-P1
+
+生产环境
+3
+A
+管理员
+
+AI 对话
+
+模式：orchestrator_v2
+
+新建
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:35
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:34
+
+分析 esx06 健康情况
+
+2026/04/21 23:34
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:33
+
+分析 esx06 健康情况
+
+2026/04/21 23:33
+
+分析主机 esx06.vstecs.lab 健康情况
+
+2026/04/21 23:19
+
+analyze esx06 host health
+
+2026/04/21 22:44
+
+analyze esx06 host health
+
+2026/04/21 22:41
+
+分析主机 esx06.vstecs.lab 健康情况
+
+OrchestratorV2
+
+我已完成意图分析。当前识别为咨询/规划语义，不会直接执行副作用动作；如需执行请明确回复“确认执行”。
+
+状态：已完成
+
+执行状态时间线
+
+汇总结果中
+完成
+任务执行完成
+2026/04/21 23:36
+查看历史状态 (8)
+
+思考摘要
+
+意图理解：系统识别到本轮请求偏向咨询或规划。
+
+执行计划：输出分析结果与风险上下文，不触发执行链路。
+
+结果摘要：已按 read 模式返回下一步建议。
+
+Intent Recovery
+
+run_id: ir_b9b062f847f2
+
+recovered
+
+执行意图：read
+
+识别为只读/问答意图，不需要执行副作用动作。
+
+环境：prod
+
+范围：single
+
+对象数：1
+
+vmware.host.diagnose
+
+L0 只读
+0.95
+
+分析 vCenter/ESXi 主机健康
+
+目标对象：esx06.vstecs.lab -> esx06.vstecs.lab
+
+对象类型：host | 解析置信度：1.00
+
+host.service.restart
+
+L2 受控变更
+0.59
+
+主机服务重启
+
+目标对象：esx06.vstecs.lab -> esx06.vstecs.lab
+
+对象类型：host | 解析置信度：1.00
+
+缺少槽位：service_name
+
+vmware.vm.power
+
+L2 受控变更
+0.45
+
+vCenter 虚拟机电源操作
+
+目标对象：esx06.vstecs.lab -> esx06.vstecs.lab
+
+对象类型：host | 解析置信度：1.00
+
+记忆命中：分析主机 esx06.vstecs.lab 健康情况、ui:conn-vcenter-prod
+
+证据引用：slot:environment、slot:target_object、slot:target_object_raw、slot:target_type、slot:target_object_resolved、slot:target_resolution_confidence、slot:target_resolution_ref_id、slot:resource_scope、utterance
+
+Audit Timeline
+
+ir_b9b062f847f2
+RECOVER
+2026/04/21 23:36
+
+恢复意图: recovered
+
+CONTEXT_COMPLETED
+2026/04/21 23:36
+
+context_hints=completed_environment,connection_id,history_size,resource_catalog_count
+
+NORMALIZED
+2026/04/21 23:36
+
+分析主机 esx06.vstecs.lab 健康情况 prod
+
+DISAMBIGUATED
+2026/04/21 23:36
+
+decision=recovered
+
+EXECUTION_INTENT_SET
+2026/04/21 23:36
+
+mode=read
+
+MEMORY_HIT
+2026/04/21 23:36
+
+memory_refs=2
+
+EXECUTION_INTENT_SET
+2026/04/21 23:36
+
+执行意图=read，阻断直接执行
+
+执行申请
+发送
+
+支持自然语言；Enter 发送，Shift+Enter 换行。
+
+关联证据
+
+暂无关联证据

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from opspilot_schema.envelope import make_error, make_success
@@ -14,9 +15,11 @@ from opspilot_schema.envelope import make_error, make_success
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+VMWARE_GATEWAY_URL = os.environ.get("VMWARE_GATEWAY_URL", "http://vmware-gateway:8030")
+KUBERNETES_GATEWAY_URL = os.environ.get("KUBERNETES_GATEWAY_URL", "http://kubernetes-gateway:8080")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 
 _TOOL_FLAGS: dict[str, dict[str, Any]] = {}
 _TOOL_INVOCATIONS: list[dict[str, Any]] = []
@@ -46,6 +49,86 @@ async def _load_tools() -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _public_gateway_url(request: Request, port: int) -> str:
+    host = request.url.hostname or "127.0.0.1"
+    scheme = request.url.scheme or "http"
+    return f"{scheme}://{host}:{port}"
+
+
+async def _probe_gateway(url: str, health_path: str = "/api/v1/health", timeout_seconds: float = 5.0) -> tuple[str, int]:
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.get(f"{url.rstrip('/')}{health_path}")
+        latency_ms = max(1, int((time.perf_counter() - start) * 1000))
+        if 200 <= resp.status_code < 300:
+            return ("healthy", latency_ms)
+        return ("degraded", latency_ms)
+    except Exception:
+        latency_ms = max(1, int((time.perf_counter() - start) * 1000))
+        return ("unreachable", latency_ms)
+
+
+async def _gateway_items(request: Request) -> list[dict[str, Any]]:
+    tools = await _load_tools()
+    gateway_defs = [
+        {
+            "id": "tool-gateway",
+            "name": "tool-gateway",
+            "display_name": "Tool Gateway",
+            "domain": "platform",
+            "internal_url": TOOL_GATEWAY_URL,
+            "public_url": _public_gateway_url(request, 8020),
+            "health_path": "/api/v1/health",
+        },
+        {
+            "id": "vmware-skill-gateway",
+            "name": "vmware-skill-gateway",
+            "display_name": "VMware Skill Gateway",
+            "domain": "vmware",
+            "internal_url": VMWARE_GATEWAY_URL,
+            "public_url": _public_gateway_url(request, 8030),
+            "health_path": "/api/v1/health",
+        },
+        {
+            "id": "kubernetes-skill-gateway",
+            "name": "kubernetes-skill-gateway",
+            "display_name": "Kubernetes Skill Gateway",
+            "domain": "kubernetes",
+            "internal_url": KUBERNETES_GATEWAY_URL,
+            "public_url": _public_gateway_url(request, 8080),
+            "health_path": "/api/v1/health",
+        },
+    ]
+
+    items: list[dict[str, Any]] = []
+    for gw in gateway_defs:
+        status, latency_ms = await _probe_gateway(gw["internal_url"], gw["health_path"])
+        if gw["name"] == "tool-gateway":
+            tool_count = len(tools)
+        elif gw["domain"] == "vmware":
+            tool_count = sum(1 for tool in tools if str(tool.get("domain")) == "vmware")
+        elif gw["domain"] == "kubernetes":
+            tool_count = sum(1 for tool in tools if str(tool.get("domain")) == "kubernetes")
+        else:
+            tool_count = 0
+        items.append(
+            {
+                "id": gw["id"],
+                "name": gw["name"],
+                "display_name": gw["display_name"],
+                "domain": gw["domain"],
+                "url": gw["public_url"],
+                "status": status,
+                "tool_count": tool_count,
+                "last_heartbeat": _now(),
+                "latency_ms": latency_ms,
+                "version": "1.0.0",
+            }
+        )
+    return items
 
 
 class ToggleBody(BaseModel):
@@ -85,13 +168,11 @@ async def list_tools():
 
 
 @router.get("/gateways")
-async def gateways():
-    data = [
-        {"name": "tool-gateway", "url": TOOL_GATEWAY_URL, "healthy": True, "last_check": _now(), "latency_ms": 20},
-        {"name": "vmware-skill-gateway", "url": os.environ.get("VMWARE_GATEWAY_URL", "http://127.0.0.1:8030"), "healthy": True, "last_check": _now(), "latency_ms": 42},
-        {"name": "kubernetes-skill-gateway", "url": os.environ.get("KUBERNETES_GATEWAY_URL", "http://127.0.0.1:8080"), "healthy": True, "last_check": _now(), "latency_ms": 38},
-    ]
-    return make_success(data)
+async def gateways(request: Request):
+    try:
+        return make_success(await _gateway_items(request))
+    except Exception as exc:  # noqa: BLE001
+        return make_error(str(exc))
 
 
 @router.get("/invocations")
@@ -104,11 +185,21 @@ async def stats():
     tools = await _load_tools()
     enabled = sum(1 for t in tools if t.get("enabled", True))
     disabled = len(tools) - enabled
+    healthy_gateways = 0
+    gateways_total = 0
+    for gateway_url in (TOOL_GATEWAY_URL, VMWARE_GATEWAY_URL, KUBERNETES_GATEWAY_URL):
+        gateways_total += 1
+        status, _latency = await _probe_gateway(gateway_url)
+        if status == "healthy":
+            healthy_gateways += 1
     return make_success(
         {
             "total_tools": len(tools),
             "enabled_tools": enabled,
             "disabled_tools": disabled,
+            "gateways_total": gateways_total,
+            "gateways_healthy": healthy_gateways,
+            "invocation_success_rate": 100,
             "last_updated_at": _now(),
         }
     )

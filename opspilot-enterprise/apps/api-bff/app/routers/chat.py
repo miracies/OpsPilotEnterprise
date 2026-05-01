@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import logging
 import os
 import re
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,19 +17,36 @@ from fastapi import APIRouter
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.services.chat_exports import get_export
+from app.services.chat_exports import get_export, register_export
+from app.services.vmware_intent import (
+    RESOURCE_SPECS,
+    WRITE_ACTIONS,
+    VmwareIntent,
+    collection_for_intent,
+    count_for_intent,
+    filter_label,
+    intent_to_dict,
+    parse_vmware_intent,
+    row_brief,
+    row_name,
+)
 from opspilot_schema.envelope import make_error, make_success
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://127.0.0.1:8010")
 RESOURCE_BFF_URL = os.environ.get("RESOURCE_BFF_URL", "http://127.0.0.1:8000")
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
+TOOL_GATEWAY_FALLBACK_URL = os.environ.get("TOOL_GATEWAY_FALLBACK_URL", "http://127.0.0.1:8020")
 EVENT_INGESTION_URL = os.environ.get("EVENT_INGESTION_URL", "http://127.0.0.1:8060")
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://127.0.0.1:9090")
+DOWNLOAD_BASE_URL = os.environ.get("DOWNLOAD_BASE_URL", "http://127.0.0.1:8000")
+CHAT_EXPORT_DIR = Path(os.environ.get("CHAT_EXPORT_DIR", "data/chat_exports"))
 DEFAULT_CHAT_MODE = os.environ.get("DEFAULT_CHAT_MODE", "orchestrator_v2").strip().lower()
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 VCENTER_PROD_VM_QUERY_KEYWORDS = re.compile(
     r"(vcenter|vsphere).*(\u751f\u4ea7|prod).*(\u865a\u62df\u673a|vm).*(\u591a\u5c11|\u6570\u91cf|count)"
     r"|(\u751f\u4ea7|prod).*(vcenter|vsphere).*(\u865a\u62df\u673a|vm).*(\u591a\u5c11|\u6570\u91cf|count)",
@@ -42,9 +62,11 @@ DIAGNOSIS_KEYWORDS = re.compile(
     r"\u5206\u6790|\u8bca\u65ad|\u6392\u67e5|\u544a\u8b66|\u6839\u56e0|\u5f02\u5e38|\u6545\u969c|\u6392\u969c|\u4e3a\u4ec0\u4e48|\u539f\u56e0|\u68c0\u67e5|\u95ee\u9898|\u4ec0\u4e48\u95ee\u9898",
     re.I,
 )
-VMWARE_KEYWORDS = re.compile(r"vmware|vcenter|esxi|\u865a\u62df\u673a|\u4e3b\u673a|\u6570\u636e\u5b58\u50a8", re.I)
+VMWARE_KEYWORDS = re.compile(r"vmware|vcenter|esxi|\bhost\b|\u865a\u62df\u673a|\u4e3b\u673a|\u6570\u636e\u5b58\u50a8", re.I)
 K8S_KEYWORDS = re.compile(r"k8s|kubernetes|pod|deployment|node|namespace|\u5bb9\u5668|\u96c6\u7fa4", re.I)
 HOST_IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+HOST_FQDN_PATTERN = re.compile(r"\b[a-zA-Z0-9-]+\.[a-zA-Z0-9.-]+\b")
+ESX_SHORT_HOST_PATTERN = re.compile(r"\besx\d+\b", re.I)
 DIAGNOSIS_STATUS_SIGNALS = re.compile(
     r"overallstatus|connectionstate|yellow|red|gray|\u975e\u5065\u5eb7|\u4e0d\u5065\u5eb7|\u72b6\u6001\u5f02\u5e38|\u5065\u5eb7\u72b6\u6001",
     re.I,
@@ -114,6 +136,15 @@ def _is_vcenter_prod_vm_query(message: str) -> bool:
     has_vm = any(k in message for k in ("虚拟机", "vm"))
     has_count = any(k in message for k in ("多少", "数量", "count"))
     return has_platform and has_env and has_vm and has_count
+
+
+def _is_vcenter_prod_host_query(message: str) -> bool:
+    lowered = message.lower()
+    has_platform = any(k in lowered for k in ("vcenter", "vsphere"))
+    has_env = any(k in message for k in ("生产", "prod"))
+    has_host = any(k in lowered for k in ("esxi", "host")) or any(k in message for k in ("主机",))
+    has_count = any(k in message for k in ("多少", "数量", "count"))
+    return has_platform and has_env and has_host and has_count
 
 
 def _is_vcenter_prod_vm_export_query(message: str) -> bool:
@@ -194,6 +225,12 @@ def _extract_host_target_from_message(message: str) -> str | None:
     ip_match = HOST_IP_PATTERN.search(message)
     if ip_match:
         return ip_match.group(0)
+    fqdn_match = HOST_FQDN_PATTERN.search(message)
+    if fqdn_match and ("esx" in fqdn_match.group(0).lower() or "host" in fqdn_match.group(0).lower()):
+        return fqdn_match.group(0)
+    esx_match = ESX_SHORT_HOST_PATTERN.search(message)
+    if esx_match:
+        return esx_match.group(0)
     patterns = [
         r"(?:主机|host)\s*[:：]?\s*([A-Za-z0-9._:-]+)",
         r"([A-Za-z0-9._:-]+)\s*(?:主机|host)",
@@ -274,7 +311,7 @@ async def _query_vcenter_prod_inventory() -> dict | None:
         "?connection_id=conn-vcenter-prod"
     )
     try:
-        async with httpx.AsyncClient(timeout=240.0) as client:
+        async with httpx.AsyncClient(timeout=240.0, trust_env=False) as client:
             resp = await client.get(url)
         body = resp.json()
         if not body.get("success"):
@@ -284,17 +321,173 @@ async def _query_vcenter_prod_inventory() -> dict | None:
         return None
 
 
+def _is_explicit_host_diagnosis(message: str) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    has_diag = bool(DIAGNOSIS_KEYWORDS.search(text) or re.search(r"健康|health|状态|overallstatus", text, re.I))
+    has_host = bool(re.search(r"主机|host|esxi", text, re.I))
+    has_explicit_target = bool(HOST_IP_PATTERN.search(text) or HOST_FQDN_PATTERN.search(text))
+    return has_diag and has_host and has_explicit_target
+
+
+def _should_prefetch_vmware_inventory(message: str, mode: str | None) -> bool:
+    if mode != "orchestrator_v2":
+        return False
+    text = (message or "").strip()
+    if not text or _is_vmware_kb_query_intent(text):
+        return False
+    vmware_signal = bool(VMWARE_KEYWORDS.search(text) or ESX_SHORT_HOST_PATTERN.search(text))
+    if not vmware_signal:
+        return False
+    if _is_explicit_host_diagnosis(text):
+        return False
+    return True
+
+
+def _resource_aliases(name: str) -> list[str]:
+    text = (name or "").strip()
+    if not text:
+        return []
+    aliases = [text]
+    if "." in text:
+        aliases.append(text.split(".", 1)[0])
+    return list(dict.fromkeys(alias for alias in aliases if alias))
+
+
+def _build_vcenter_resource_catalog(inventory: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(inventory, dict):
+        return []
+    catalog: list[dict[str, Any]] = []
+    for host in inventory.get("hosts", []) or []:
+        name = str(host.get("name") or "").strip()
+        host_id = str(host.get("host_id") or name).strip()
+        if not name and not host_id:
+            continue
+        catalog.append(
+            {
+                "id": host_id or name,
+                "name": name or host_id,
+                "aliases": _resource_aliases(name or host_id),
+                "type": "host",
+                "connection_id": "conn-vcenter-prod",
+                "environment": "prod",
+            }
+        )
+    for vm in inventory.get("virtual_machines", []) or []:
+        name = str(vm.get("name") or "").strip()
+        vm_id = str(vm.get("vm_id") or name).strip()
+        if not name and not vm_id:
+            continue
+        catalog.append(
+            {
+                "id": vm_id or name,
+                "name": name or vm_id,
+                "aliases": _resource_aliases(name or vm_id),
+                "type": "vm",
+                "connection_id": "conn-vcenter-prod",
+                "environment": "prod",
+            }
+        )
+    return catalog
+
+
+def _should_use_local_vcenter_resource_path(message: str) -> bool:
+    intent = parse_vmware_intent(message)
+    if intent and (intent.action in WRITE_ACTIONS or intent.action in {"count", "list", "summary", "detail", "metric", "capacity", "relationship", "topn"}):
+        return True
+    if _is_vmware_metric_followup_query(message):
+        return True
+    return (
+        _is_vcenter_prod_vm_query(message)
+        or _is_vcenter_prod_host_query(message)
+        or _is_vcenter_prod_vm_export_query(message)
+        or _is_vcenter_prod_vm_power_query(message)
+        or _is_vm_power_action_intent(message)
+    )
+
+
+def _is_vmware_metric_followup_query(message: str) -> bool:
+    text = (message or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    if "vcenter" in lowered and ("告警" in text or "事件" in text):
+        return True
+    if "esxi" in lowered and "导出" in text and ("使用率" in text or "报表" in text):
+        return True
+    if _extract_host_target_from_message(text) and any(
+        token in text for token in ("上的虚拟机", "承载虚拟机", "最近事件", "关联 datastore", "关联datastore", "健康状态")
+    ):
+        return True
+    return False
+
+
+def _is_vcenter_alert_event_query(message: str) -> bool:
+    text = message or ""
+    lowered = text.lower()
+    return "vcenter" in lowered and ("告警" in text or "事件" in text)
+
+
+def _is_esxi_metric_report_export_query(message: str) -> bool:
+    text = message or ""
+    lowered = text.lower()
+    return "导出" in text and "esxi" in lowered and ("使用率" in text or "报表" in text)
+
+
+def _is_host_vm_list_followup(message: str) -> bool:
+    return bool(_extract_host_target_from_message(message) and any(token in message for token in ("上的虚拟机", "承载虚拟机")))
+
+
+def _is_host_event_followup(message: str) -> bool:
+    return bool(_extract_host_target_from_message(message) and "最近事件" in message)
+
+
+def _is_host_datastore_latency_followup(message: str) -> bool:
+    text = message or ""
+    return bool(
+        _extract_host_target_from_message(text)
+        and ("关联 datastore" in text or "关联datastore" in text)
+        and ("延迟" in text or "latency" in text.lower())
+    )
+
+
+def _is_host_health_diagnosis_followup(message: str) -> bool:
+    return bool(_extract_host_target_from_message(message) and "健康状态" in message and ("诊断" in message or "分析" in message))
+
+
+async def _invoke_tool_gateway_with_error(
+    tool_name: str,
+    input_payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    base_urls: list[str] = []
+    for candidate in (
+        TOOL_GATEWAY_URL,
+        TOOL_GATEWAY_FALLBACK_URL,
+        "http://127.0.0.1:8020",
+    ):
+        if candidate and candidate not in base_urls:
+            base_urls.append(candidate)
+
+    last_error: str | None = None
+    for base_url in base_urls:
+        url = f"{base_url.rstrip('/')}/api/v1/invoke/{tool_name}"
+        try:
+            async with httpx.AsyncClient(timeout=180.0, trust_env=False) as client:
+                resp = await client.post(url, json={"input": input_payload, "dry_run": False})
+            body = resp.json()
+            if body.get("success"):
+                return body.get("data", {}), None
+            last_error = str(body.get("error") or "tool invoke failed")
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            continue
+    return None, last_error
+
+
 async def _invoke_tool_gateway(tool_name: str, input_payload: dict[str, Any]) -> dict[str, Any] | None:
-    url = f"{TOOL_GATEWAY_URL.rstrip('/')}/api/v1/invoke/{tool_name}"
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            resp = await client.post(url, json={"input": input_payload, "dry_run": False})
-        body = resp.json()
-        if not body.get("success"):
-            return None
-        return body.get("data", {})
-    except Exception:
-        return None
+    data, _ = await _invoke_tool_gateway_with_error(tool_name, input_payload)
+    return data
 
 
 async def _write_audit_log(payload: dict[str, Any]) -> None:
@@ -390,9 +583,9 @@ async def _invoke_vmware_kb_search_fallback(message: str) -> tuple[dict[str, Any
         "language": "en_US",
         "page_size": 5,
     }
-    data = await _invoke_tool_gateway("vmware.kb_search", payload)
+    data, err = await _invoke_tool_gateway_with_error("vmware.kb_search", payload)
     if not data:
-        return None, "vmware.kb_search 调用失败"
+        return None, f"vmware.kb_search 调用失败: {err or 'unknown error'}"
     return data, None
 
 
@@ -651,8 +844,1322 @@ def _reasoning_summary(intent_understanding: str, execution_plan: str, result_su
     }
 
 
+METRIC_PROMETHEUS_NAMES = {
+    "cpu_usage_percent": "opspilot_vmware_host_cpu_usage_percent",
+    "cpu_capacity_mhz": "opspilot_vmware_host_cpu_capacity_mhz",
+    "memory_usage_percent": "opspilot_vmware_host_memory_usage_percent",
+    "memory_capacity_mb": "opspilot_vmware_host_memory_capacity_mb",
+    "datastore_free_percent": "opspilot_vmware_datastore_free_percent",
+    "datastore_capacity_gb": "opspilot_vmware_datastore_capacity_gb",
+    "datastore_iops": "opspilot_vmware_datastore_iops",
+    "datastore_latency_ms": "opspilot_vmware_datastore_latency_ms",
+    "datastore_throughput_mbps": "opspilot_vmware_datastore_throughput_mbps",
+}
+
+METRIC_UNITS = {
+    "cpu_usage_percent": "%",
+    "cpu_capacity_mhz": "MHz",
+    "memory_usage_percent": "%",
+    "memory_capacity_mb": "MB",
+    "datastore_free_percent": "%",
+    "datastore_capacity_gb": "GB",
+    "datastore_iops": "IOPS",
+    "datastore_latency_ms": "ms",
+    "datastore_throughput_mbps": "MB/s",
+}
+
+METRIC_LABELS = {
+    "cpu_usage_percent": "CPU 使用率",
+    "cpu_capacity_mhz": "CPU 容量",
+    "memory_usage_percent": "内存使用率",
+    "memory_capacity_mb": "内存容量",
+    "datastore_free_percent": "Datastore 剩余容量占比",
+    "datastore_capacity_gb": "Datastore 总容量",
+    "datastore_iops": "Datastore IOPS",
+    "datastore_latency_ms": "Datastore 读写延迟",
+    "datastore_throughput_mbps": "Datastore 吞吐量",
+}
+
+
+def _metric_label(metric_name: str | None) -> str:
+    return METRIC_LABELS.get(metric_name or "", metric_name or "指标")
+
+
+def _metric_unit(metric_name: str | None) -> str:
+    return METRIC_UNITS.get(metric_name or "", "")
+
+
+def _metric_value_from_row(row: dict[str, Any], metric_name: str | None) -> float | None:
+    try:
+        if metric_name == "cpu_usage_percent":
+            if row.get("cpu_usage_percent") is not None:
+                return round(float(row["cpu_usage_percent"]), 2)
+            total = float(row.get("cpu_mhz") or 0)
+            used = float(row.get("cpu_usage_mhz") or 0)
+            return round(used * 100 / total, 2) if total > 0 else None
+        if metric_name == "cpu_capacity_mhz":
+            return round(float(row.get("cpu_mhz")), 2)
+        if metric_name == "memory_usage_percent":
+            if row.get("memory_usage_percent") is not None:
+                return round(float(row["memory_usage_percent"]), 2)
+            total = float(row.get("memory_mb") or 0)
+            used = float(row.get("memory_usage_mb") or 0)
+            return round(used * 100 / total, 2) if total > 0 else None
+        if metric_name == "memory_capacity_mb":
+            return round(float(row.get("memory_mb")), 2)
+        if metric_name == "datastore_free_percent":
+            capacity = float(row.get("capacity_gb") or 0)
+            free = float(row.get("free_gb") or 0)
+            return round(free * 100 / capacity, 2) if capacity > 0 else None
+        if metric_name == "datastore_capacity_gb":
+            return round(float(row.get("capacity_gb")), 2)
+        if metric_name and row.get(metric_name) is not None:
+            return round(float(row.get(metric_name)), 2)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _row_id_for_resource(row: dict[str, Any], resource_type: str | None) -> str:
+    if resource_type == "host":
+        return str(row.get("host_id") or row.get("id") or row_name(row))
+    if resource_type == "vm":
+        return str(row.get("vm_id") or row.get("id") or row_name(row))
+    if resource_type == "datastore":
+        return str(row.get("id") or row.get("datastore_id") or row_name(row))
+    if resource_type == "cluster":
+        return str(row.get("cluster_id") or row.get("id") or row_name(row))
+    return row_name(row)
+
+
+def _resolve_vmware_rows(inventory: dict[str, Any], intent: VmwareIntent) -> list[dict[str, Any]]:
+    rows = collection_for_intent(inventory, intent)
+    target = (intent.target_object or "").strip().lower()
+    if not target:
+        return rows
+    exact: list[dict[str, Any]] = []
+    partial: list[dict[str, Any]] = []
+    for row in rows:
+        candidates = {
+            str(row.get("name") or "").lower(),
+            str(row.get("host_id") or "").lower(),
+            str(row.get("vm_id") or "").lower(),
+            str(row.get("cluster_id") or "").lower(),
+            str(row.get("id") or "").lower(),
+        }
+        if target in candidates:
+            exact.append(row)
+        elif any(target in item for item in candidates if item):
+            partial.append(row)
+    return exact or partial
+
+
+def _aggregation_value(series: list[dict[str, Any]], aggregation: str) -> float | None:
+    values: list[float] = []
+    for point in series:
+        try:
+            values.append(float(point.get("value")))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return None
+    if aggregation == "avg":
+        return round(sum(values) / len(values), 2)
+    if aggregation == "max":
+        return round(max(values), 2)
+    if aggregation == "min":
+        return round(min(values), 2)
+    return round(values[-1], 2)
+
+
+def _prometheus_query_for(intent: VmwareIntent, row: dict[str, Any] | None = None) -> str | None:
+    metric = METRIC_PROMETHEUS_NAMES.get(intent.metric_name or "")
+    if not metric:
+        return None
+    labels: list[str] = ['connection_id="conn-vcenter-prod"']
+    if row is not None:
+        if intent.resource_type == "host":
+            if row.get("host_id"):
+                labels.append(f'host_id="{row.get("host_id")}"')
+        elif intent.resource_type == "datastore":
+            if row.get("id"):
+                labels.append(f'datastore_id="{row.get("id")}"')
+        elif intent.resource_type == "vm":
+            if row.get("vm_id"):
+                labels.append(f'vm_id="{row.get("vm_id")}"')
+    return f"{metric}{{{','.join(labels)}}}"
+
+
+async def _query_prometheus(intent: VmwareIntent, row: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    query = _prometheus_query_for(intent, row)
+    if not query:
+        return None
+    base = PROMETHEUS_URL.rstrip("/")
+    endpoint = "/api/v1/query_range" if intent.time_range_minutes else "/api/v1/query"
+    params: dict[str, Any] = {"query": query}
+    if intent.time_range_minutes:
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        params.update(
+            {
+                "start": now_ts - intent.time_range_minutes * 60,
+                "end": now_ts,
+                "step": intent.step_seconds,
+            }
+        )
+    try:
+        async with httpx.AsyncClient(timeout=4.0, trust_env=False) as client:
+            resp = await client.get(f"{base}{endpoint}", params=params)
+        body = resp.json()
+    except Exception:
+        return None
+    if body.get("status") != "success":
+        return None
+    result = ((body.get("data") or {}).get("result") or [])
+    if not result:
+        return None
+    first = result[0]
+    series: list[dict[str, Any]] = []
+    if intent.time_range_minutes:
+        for ts, value in first.get("values") or []:
+            try:
+                series.append({"timestamp": datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat(), "value": float(value)})
+            except (TypeError, ValueError):
+                continue
+    else:
+        value_pair = first.get("value") or []
+        if len(value_pair) >= 2:
+            try:
+                series.append({"timestamp": datetime.fromtimestamp(float(value_pair[0]), tz=timezone.utc).isoformat(), "value": float(value_pair[1])})
+            except (TypeError, ValueError):
+                return None
+    value = _aggregation_value(series, intent.aggregation)
+    if value is None:
+        return None
+    return {
+        "source": "prometheus",
+        "tool_name": "prometheus.query_range" if intent.time_range_minutes else "prometheus.query",
+        "query": query,
+        "series": series,
+        "value": value,
+        "unit": _metric_unit(intent.metric_name),
+    }
+
+
+async def _query_vcenter_metric(intent: VmwareIntent, row: dict[str, Any]) -> dict[str, Any] | None:
+    object_id = _row_id_for_resource(row, intent.resource_type)
+    data, error = await _invoke_tool_gateway_with_error(
+        "vmware.query_metrics",
+        {
+            "connection": _vcenter_connection_input(),
+            "object_type": intent.resource_type,
+            "object_id": object_id,
+            "metric": intent.metric_name,
+            "metrics": [intent.metric_name] if intent.metric_name else [],
+            "range_minutes": intent.time_range_minutes,
+            "step_seconds": intent.step_seconds,
+            "source": "vcenter",
+        },
+    )
+    if not data:
+        return {"source": "vcenter", "error": error or "metric unavailable", "series": [], "value": None, "unit": _metric_unit(intent.metric_name)}
+    series = data.get("series") or []
+    if not isinstance(series, list) and isinstance(data.get("metrics"), dict) and intent.metric_name:
+        series = (data["metrics"].get(intent.metric_name) or {}).get("series") or []
+    normalized = [point for point in series if isinstance(point, dict)]
+    value = _aggregation_value(normalized, intent.aggregation)
+    return {
+        "source": str(data.get("source") or "vcenter"),
+        "tool_name": "vmware.query_metrics",
+        "series": normalized,
+        "value": value,
+        "unit": _metric_unit(intent.metric_name),
+        "error": None if value is not None else data.get("error"),
+    }
+
+
+def _build_clarify_for_vmware(intent: VmwareIntent, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    choices = [
+        {
+            "id": _row_id_for_resource(row, intent.resource_type),
+            "label": row_name(row),
+            "description": _row_id_for_resource(row, intent.resource_type),
+        }
+        for row in rows[:8]
+    ]
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": "匹配到多个 VMware 对象，请补充更精确的对象名称或 ID。",
+        "agent_name": "ResourceQueryAgent",
+        "tool_traces": [],
+        "evidence_refs": [],
+        "evidences": [],
+        "intent_recovery": {"vmware_intent": intent_to_dict(intent)},
+        "clarify_card": {
+            "question": "请选择要查询的 VMware 对象",
+            "choices": choices,
+            "allow_free_text": True,
+            "reason_code": "ambiguous_vmware_object",
+        },
+        "reasoning_summary": _reasoning_summary(
+            "用户希望查询 VMware 对象指标或关系。",
+            "按本体解析后在 inventory 中定位对象。",
+            "对象名称存在多个候选，已请求澄清。",
+        ),
+    }
+
+
+async def _format_vmware_metric_or_capacity(intent: VmwareIntent, inventory: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str]:
+    rows = _resolve_vmware_rows(inventory, intent)
+    if intent.target_object and len(rows) > 1:
+        raise ValueError("ambiguous")
+    if not rows:
+        return "未在 conn-vcenter-prod 中找到匹配的 VMware 对象，请确认名称或 ID。", [], "not_found"
+    row = rows[0]
+    metric_name = intent.metric_name or ("datastore_free_percent" if intent.resource_type == "datastore" else None)
+    direct_value = _metric_value_from_row(row, metric_name) if not intent.time_range_minutes else None
+    metric_result: dict[str, Any] | None = None
+    if direct_value is None:
+        prometheus_result = await _query_prometheus(intent, row)
+        metric_result = prometheus_result or await _query_vcenter_metric(intent, row)
+    value = direct_value if direct_value is not None else (metric_result or {}).get("value")
+    source = "inventory" if direct_value is not None else str((metric_result or {}).get("source") or "vcenter")
+    unit = _metric_unit(metric_name)
+    if value is None:
+        message = f"{row_name(row)} 的 {_metric_label(metric_name)} 当前不可用；该指标可能未由 vCenter 或 Prometheus 暴露。"
+        trace = [
+            {
+                "tool_name": (metric_result or {}).get("tool_name", "vmware.query_metrics"),
+                "gateway": source,
+                "input_summary": str(intent_to_dict(intent)),
+                "output_summary": (metric_result or {}).get("error") or "metric unavailable",
+                "duration_ms": 0,
+                "status": "error",
+                "timestamp": _now(),
+            }
+        ]
+        return message, trace, "metric_unavailable"
+
+    window = f"过去 {intent.time_range_minutes} 分钟" if intent.time_range_minutes else "当前"
+    agg = {"avg": "平均", "max": "峰值", "min": "最低", "latest": "最新"}.get(intent.aggregation, intent.aggregation)
+    message = (
+        f"vCenter 生产环境（conn-vcenter-prod）{row_name(row)} 的 {_metric_label(metric_name)}：\n\n"
+        f"- 时间窗口：{window}\n"
+        f"- 统计方式：{agg}\n"
+        f"- 数值：{value}{unit}\n"
+        f"- 数据来源：{source}"
+    )
+    tool_name = "vmware.get_vcenter_inventory" if source == "inventory" else (metric_result or {}).get("tool_name", "vmware.query_metrics")
+    trace = [
+        {
+            "tool_name": tool_name,
+            "gateway": source,
+            "input_summary": str(intent_to_dict(intent)),
+            "output_summary": f"{metric_name}={value}{unit}",
+            "duration_ms": 0,
+            "status": "success",
+            "timestamp": _now(),
+        }
+    ]
+    return message, trace, f"{metric_name}={value}{unit};source={source}"
+
+
+def _is_host_cpu_memory_overview_intent(intent: VmwareIntent) -> bool:
+    text = intent.raw_text.lower()
+    has_cpu = "cpu" in text
+    has_memory = "内存" in intent.raw_text or "memory" in text or "mem" in text
+    return (
+        intent.action == "metric"
+        and intent.resource_type == "host"
+        and not intent.target_object
+        and intent.time_range_minutes > 0
+        and has_cpu
+        and has_memory
+    )
+
+
+def _fallback_metric_series(value: float | None, minutes: int, step_seconds: int) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    now = datetime.now(timezone.utc)
+    window = max(minutes, 1)
+    step = max(step_seconds, 60)
+    point_count = max(2, min(24, int((window * 60) / step) + 1))
+    start = now - timedelta(minutes=window)
+    if point_count == 1:
+        offsets = [0]
+    else:
+        offsets = [round(i * window * 60 / (point_count - 1)) for i in range(point_count)]
+    return [
+        {
+            "timestamp": (start + timedelta(seconds=offset)).isoformat(),
+            "value": round(float(value), 2),
+            "source": "vcenter_inventory",
+        }
+        for offset in offsets
+    ]
+
+
+def _series_stats(series: list[dict[str, Any]]) -> dict[str, Any]:
+    values: list[float] = []
+    for point in series:
+        try:
+            values.append(float(point.get("value")))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return {"current": None, "avg": None, "peak": None, "high_minutes": 0, "critical_minutes": 0}
+    return {
+        "current": round(values[-1], 2),
+        "avg": round(sum(values) / len(values), 2),
+        "peak": round(max(values), 2),
+        "high_minutes": sum(5 for value in values if value >= 80),
+        "critical_minutes": sum(5 for value in values if value >= 90),
+    }
+
+
+def _series_point_value(series: list[dict[str, Any]], index: int) -> float | None:
+    if index >= len(series):
+        return None
+    try:
+        return float(series[index].get("value"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_overview_series(host_series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    max_len = max(
+        (
+            max(len(item.get("cpu_series", []) or []), len(item.get("memory_series", []) or []))
+            for item in host_series
+        ),
+        default=0,
+    )
+    overview: list[dict[str, Any]] = []
+    for idx in range(max_len):
+        timestamps = []
+        cpu_values: list[float] = []
+        memory_values: list[float] = []
+        for item in host_series:
+            cpu_series = item.get("cpu_series", []) or []
+            memory_series = item.get("memory_series", []) or []
+            if idx < len(cpu_series):
+                timestamps.append(cpu_series[idx].get("timestamp"))
+            elif idx < len(memory_series):
+                timestamps.append(memory_series[idx].get("timestamp"))
+            cpu_value = _series_point_value(cpu_series, idx)
+            memory_value = _series_point_value(memory_series, idx)
+            if cpu_value is not None:
+                cpu_values.append(cpu_value)
+            if memory_value is not None:
+                memory_values.append(memory_value)
+        timestamp = next((str(item) for item in timestamps if item), "")
+        if not timestamp:
+            continue
+        overview.append(
+            {
+                "timestamp": timestamp,
+                "cpu_avg": round(sum(cpu_values) / len(cpu_values), 2) if cpu_values else None,
+                "cpu_max": round(max(cpu_values), 2) if cpu_values else None,
+                "memory_avg": round(sum(memory_values) / len(memory_values), 2) if memory_values else None,
+                "memory_max": round(max(memory_values), 2) if memory_values else None,
+            }
+        )
+    return overview
+
+
+def _metric_status(summary_stats: dict[str, Any], top_hosts: list[dict[str, Any]]) -> tuple[str, list[str], list[str]]:
+    cpu_peak = float((summary_stats.get("cpu") or {}).get("peak") or 0)
+    memory_peak = float((summary_stats.get("memory") or {}).get("peak") or 0)
+    has_critical = any(
+        float(host.get("cpu_peak") or 0) >= 90 or float(host.get("memory_peak") or 0) >= 90
+        for host in top_hosts
+    )
+    has_warning = any(
+        float(host.get("cpu_peak") or 0) >= 80 or float(host.get("memory_peak") or 0) >= 80
+        for host in top_hosts
+    )
+    if has_critical:
+        status = "异常"
+        risk = "存在高风险资源压力"
+    elif has_warning:
+        status = "偏高"
+        risk = "存在资源压力，需要关注持续时间"
+    else:
+        status = "正常"
+        risk = "未发现持续 CPU 或内存饱和"
+
+    insights = [
+        f"CPU：集群平均 {(summary_stats.get('cpu') or {}).get('avg', 'N/A')}%，峰值 {cpu_peak:.2f}%。",
+        f"内存：集群平均 {(summary_stats.get('memory') or {}).get('avg', 'N/A')}%，峰值 {memory_peak:.2f}%。",
+        f"风险：{risk}。",
+    ]
+    actions: list[str] = []
+    if top_hosts:
+        primary = top_hosts[0]
+        host_name = str(primary.get("name") or primary.get("host_id") or "目标主机")
+        if float(primary.get("memory_peak") or 0) >= 80 or float(primary.get("cpu_peak") or 0) >= 80:
+            actions.extend(
+                [
+                    f"查看 {host_name} 上的虚拟机",
+                    f"查看 {host_name} 最近事件",
+                    f"查看 {host_name} 关联 datastore 延迟",
+                    f"诊断 {host_name} 健康状态",
+                ]
+            )
+        else:
+            actions.extend(["查看最近vCenter告警和事件", "导出ESXi资源使用率报表"])
+    return status, insights, actions
+
+
+def _metric_next_action_items(actions: list[str], status: str, top_hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    top_host = top_hosts[0] if top_hosts else {}
+    host_name = str(top_host.get("name") or top_host.get("host_id") or "").strip()
+    host_id = str(top_host.get("host_id") or "").strip()
+    for label in actions:
+        prompt = label
+        kind = "query"
+        intent: dict[str, Any] = {"domain": "vmware", "status": status}
+        target: dict[str, Any] = {}
+        if label in {"查看最近 vCenter 告警和事件", "查看最近vCenter告警和事件"}:
+            prompt = "查看生产环境最近24小时 vCenter 告警和事件"
+            kind = "events"
+            intent["action"] = "query_alerts_events"
+        elif label in {"导出 ESXi 资源使用率报表", "导出ESXi资源使用率报表"}:
+            prompt = "导出生产环境ESXi主机过去1小时CPU和内存使用率报表"
+            kind = "export"
+            intent["action"] = "export_metric_report"
+        elif "上的虚拟机" in label:
+            prompt = f"查看生产环境 {host_name} 上的虚拟机"
+            kind = "relationship"
+            intent["action"] = "list_host_vms"
+            target = {"resource_type": "host", "name": host_name, "host_id": host_id}
+        elif "最近事件" in label:
+            prompt = f"查看生产环境 {host_name} 最近事件"
+            kind = "events"
+            intent["action"] = "query_host_events"
+            target = {"resource_type": "host", "name": host_name, "host_id": host_id}
+        elif "关联 datastore 延迟" in label:
+            prompt = f"查看生产环境 {host_name} 关联 datastore 延迟"
+            kind = "metric"
+            intent["action"] = "query_host_datastore_latency"
+            target = {"resource_type": "host", "name": host_name, "host_id": host_id}
+        elif "健康状态" in label:
+            prompt = f"诊断生产环境 {host_name} 健康状态"
+            kind = "diagnose"
+            intent["action"] = "diagnose_host_health"
+            target = {"resource_type": "host", "name": host_name, "host_id": host_id}
+        items.append({"label": label, "prompt": prompt, "kind": kind, "target": target, "intent": intent})
+    return items
+
+
+async def _build_host_cpu_memory_metric_result(intent: VmwareIntent, inventory: dict[str, Any]) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[str], str]:
+    rows = [row for row in collection_for_intent(inventory, intent) if isinstance(row, dict)]
+    if not rows:
+        message = "未在 conn-vcenter-prod 中找到 ESXi 主机，无法生成 CPU/内存趋势。"
+        metric_result = {
+            "scope": "esxi_hosts",
+            "window": "1h",
+            "source": "none",
+            "series": [],
+            "host_series": [],
+            "summary_stats": {"host_count": 0},
+            "top_hosts": [],
+            "insights": ["未找到 ESXi 主机。"],
+            "next_actions": ["先查询 vCenter 主机清单确认连接状态"],
+            "next_action_items": [
+                {
+                    "label": "先查询 vCenter 主机清单确认连接状态",
+                    "prompt": "列出生产环境 ESXi 主机",
+                    "kind": "query",
+                    "target": {"resource_type": "host"},
+                    "intent": {"domain": "vmware", "action": "list_hosts"},
+                }
+            ],
+        }
+        return message, metric_result, [], metric_result["next_actions"], "host_count=0"
+
+    metric_names = ("cpu_usage_percent", "memory_usage_percent")
+    host_series: list[dict[str, Any]] = []
+    traces: list[dict[str, Any]] = []
+    used_prometheus = False
+    prometheus_failed = False
+
+    for row in rows:
+        per_host: dict[str, Any] = {
+            "host_id": row.get("host_id"),
+            "name": row_name(row),
+            "cluster_id": row.get("cluster_id"),
+        }
+        for metric_name in metric_names:
+            metric_intent = VmwareIntent(
+                domain=intent.domain,
+                action="metric",
+                resource_type="host",
+                environment=intent.environment,
+                metric_name=metric_name,
+                time_range_minutes=intent.time_range_minutes or 60,
+                step_seconds=intent.step_seconds,
+                aggregation="latest",
+                raw_text=intent.raw_text,
+            )
+            metric_result = None if prometheus_failed else await _query_prometheus(metric_intent, row)
+            if metric_result and metric_result.get("series"):
+                used_prometheus = True
+                series = metric_result["series"]
+                source = "prometheus"
+            else:
+                if not used_prometheus:
+                    prometheus_failed = True
+                value = _metric_value_from_row(row, metric_name)
+                series = _fallback_metric_series(value, intent.time_range_minutes or 60, intent.step_seconds)
+                source = "vcenter_inventory"
+            per_host[f"{'cpu' if metric_name == 'cpu_usage_percent' else 'memory'}_series"] = series
+            per_host[f"{'cpu' if metric_name == 'cpu_usage_percent' else 'memory'}_source"] = source
+        cpu_stats = _series_stats(per_host.get("cpu_series", []) or [])
+        memory_stats = _series_stats(per_host.get("memory_series", []) or [])
+        per_host.update(
+            {
+                "cpu_current": cpu_stats["current"],
+                "cpu_avg": cpu_stats["avg"],
+                "cpu_peak": cpu_stats["peak"],
+                "cpu_high_minutes": cpu_stats["high_minutes"],
+                "memory_current": memory_stats["current"],
+                "memory_avg": memory_stats["avg"],
+                "memory_peak": memory_stats["peak"],
+                "memory_high_minutes": memory_stats["high_minutes"],
+                "max_usage": max(float(cpu_stats["peak"] or 0), float(memory_stats["peak"] or 0)),
+                "primary_pressure": "memory" if float(memory_stats["peak"] or 0) >= float(cpu_stats["peak"] or 0) else "cpu",
+            }
+        )
+        host_series.append(per_host)
+
+    overview_series = _build_overview_series(host_series)
+    cpu_stats = _series_stats([{"value": item.get("cpu_avg")} for item in overview_series if item.get("cpu_avg") is not None])
+    memory_stats = _series_stats([{"value": item.get("memory_avg")} for item in overview_series if item.get("memory_avg") is not None])
+    cpu_peak = max((float(item.get("cpu_max") or 0) for item in overview_series), default=0)
+    memory_peak = max((float(item.get("memory_max") or 0) for item in overview_series), default=0)
+    cpu_stats["peak"] = round(cpu_peak, 2)
+    memory_stats["peak"] = round(memory_peak, 2)
+
+    top_hosts = sorted(host_series, key=lambda item: float(item.get("max_usage") or 0), reverse=True)[:5]
+    summary_stats = {
+        "host_count": len(rows),
+        "cpu": cpu_stats,
+        "memory": memory_stats,
+        "thresholds": {"warning": 80, "critical": 90},
+    }
+    status, insights, next_actions = _metric_status(summary_stats, top_hosts)
+    next_action_items = _metric_next_action_items(next_actions, status, top_hosts)
+    source = "prometheus" if used_prometheus else "vcenter_inventory"
+    source_label = "Prometheus" if used_prometheus else "vCenter 实时 inventory（Prometheus 无可用历史数据）"
+    top_names = "、".join(str(host.get("name")) for host in top_hosts[:3] if host.get("name")) or "无"
+    message = (
+        f"过去 1 小时生产环境 {len(rows)} 台 ESXi 主机 CPU/内存整体状态：{status}。\n\n"
+        "关键结论：\n"
+        f"- CPU：集群平均 {cpu_stats.get('avg', 'N/A')}%，峰值 {cpu_stats.get('peak', 'N/A')}%。\n"
+        f"- 内存：集群平均 {memory_stats.get('avg', 'N/A')}%，峰值 {memory_stats.get('peak', 'N/A')}%。\n"
+        f"- 重点主机：{top_names}。\n"
+        f"- 数据来源：{source_label}。\n"
+        f"- 建议：{next_actions[0] if next_actions else '继续观察最近告警和资源趋势。'}"
+    )
+    traces.append(
+        {
+            "tool_name": "prometheus.query_range" if used_prometheus else "vmware.get_vcenter_inventory",
+            "gateway": source,
+            "input_summary": str(intent_to_dict(intent)),
+            "output_summary": f"hosts={len(rows)};cpu_peak={cpu_stats.get('peak')};memory_peak={memory_stats.get('peak')}",
+            "duration_ms": 0,
+            "status": "success",
+            "timestamp": _now(),
+        }
+    )
+    metric_result = {
+        "scope": "esxi_hosts",
+        "window": "1h",
+        "source": source,
+        "metrics": [
+            {"name": "cpu_usage_percent", "label": "CPU 使用率", "unit": "%"},
+            {"name": "memory_usage_percent", "label": "内存使用率", "unit": "%"},
+        ],
+        "series": overview_series,
+        "host_series": host_series,
+        "summary_stats": summary_stats,
+        "top_hosts": top_hosts,
+        "insights": insights,
+        "next_actions": next_actions,
+        "next_action_items": next_action_items,
+        "status": status,
+    }
+    return message, metric_result, traces, next_actions, f"hosts={len(rows)};status={status};source={source}"
+
+
+def _latest_esxi_metric_result(session_id: str) -> dict[str, Any] | None:
+    for message in reversed(_messages.get(session_id, [])):
+        metric_result = message.get("metric_result")
+        if isinstance(metric_result, dict) and metric_result.get("scope") == "esxi_hosts":
+            return metric_result
+    return None
+
+
+def _host_from_message(inventory: dict[str, Any], message: str) -> dict[str, Any] | None:
+    target = _extract_host_target_from_message(message)
+    if not target:
+        return None
+    hosts = inventory.get("hosts", []) if isinstance(inventory.get("hosts", []), list) else []
+    return _match_host_from_inventory(hosts, target)
+
+
+def _host_identity(host: dict[str, Any] | None) -> tuple[str, str]:
+    if not host:
+        return "", ""
+    return str(host.get("host_id") or host.get("id") or host.get("name") or ""), str(host.get("name") or host.get("host_id") or "")
+
+
+def _severity_rank(item: dict[str, Any]) -> int:
+    value = str(item.get("severity") or item.get("level") or item.get("status") or "").lower()
+    if value in {"critical", "error", "red"}:
+        return 0
+    if value in {"warning", "warn", "yellow"}:
+        return 1
+    return 2
+
+
+async def _query_vcenter_alerts_and_events(host: dict[str, Any] | None = None, hours: int = 24) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    traces: list[dict[str, Any]] = []
+    connection = _vcenter_connection_input()
+    host_id, host_name = _host_identity(host)
+    alerts_data, alerts_error = await _invoke_tool_gateway_with_error("vmware.query_alerts", {"connection": connection})
+    alerts = []
+    if alerts_data:
+        alerts = [item for item in (alerts_data.get("alerts") or []) if isinstance(item, dict)]
+        if host_name:
+            alerts = [
+                item
+                for item in alerts
+                if host_id in {str(item.get("object_id") or ""), str(item.get("entity_id") or "")}
+                or host_name.lower() in str(item.get("object_name") or item.get("summary") or item.get("message") or "").lower()
+            ]
+    traces.append(
+        {
+            "tool_name": "vmware.query_alerts",
+            "gateway": "tool-gateway",
+            "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+            "output_summary": f"alerts={len(alerts)}" if alerts_data else (alerts_error or "query failed"),
+            "duration_ms": 0,
+            "status": "success" if alerts_data else "error",
+            "timestamp": _now(),
+        }
+    )
+
+    object_id = host_id or "conn-vcenter-prod"
+    events_data, events_error = await _invoke_tool_gateway_with_error(
+        "vmware.query_events",
+        {"connection": connection, "object_id": object_id, "hours": hours},
+    )
+    events = []
+    if events_data:
+        events = [item for item in (events_data.get("events") or []) if isinstance(item, dict)]
+    traces.append(
+        {
+            "tool_name": "vmware.query_events",
+            "gateway": "tool-gateway",
+            "input_summary": f'{{"object_id":"{object_id}","hours":{hours}}}',
+            "output_summary": f"events={len(events)}" if events_data else (events_error or "query failed"),
+            "duration_ms": 0,
+            "status": "success" if events_data else "error",
+            "timestamp": _now(),
+        }
+    )
+    return sorted(alerts, key=_severity_rank), events, traces
+
+
+async def _build_vcenter_alert_event_data(message: str, inventory: dict[str, Any] | None = None) -> dict[str, Any]:
+    host = _host_from_message(inventory or {}, message) if inventory else None
+    host_id, host_name = _host_identity(host)
+    alerts, events, traces = await _query_vcenter_alerts_and_events(host, hours=24)
+    scope = f"主机 {host_name}" if host_name else "vCenter 生产环境"
+    lines = [
+        f"{scope} 最近 24 小时告警和事件：",
+        "",
+        f"- 活跃/异常告警：{len(alerts)} 条",
+        f"- 事件：{len(events)} 条",
+    ]
+    if alerts:
+        lines.append("- 告警 Top5：")
+        for idx, item in enumerate(alerts[:5], 1):
+            lines.append(
+                f"  {idx}. [{item.get('severity') or item.get('level') or 'info'}] "
+                f"{item.get('object_name') or host_name or item.get('object_id') or '对象'}："
+                f"{item.get('summary') or item.get('message') or '无摘要'}"
+            )
+    else:
+        lines.append("- 告警 Top5：无")
+    if events:
+        lines.append("- 最近事件 Top5：")
+        for idx, item in enumerate(events[:5], 1):
+            lines.append(
+                f"  {idx}. [{item.get('level') or item.get('severity') or 'info'}] "
+                f"{item.get('created_time') or item.get('timestamp') or 'N/A'} "
+                f"{item.get('message') or item.get('event_type') or item.get('type') or '事件'}"
+            )
+    else:
+        lines.append("- 最近事件 Top5：无或当前数据源未返回事件")
+    if not alerts and not events:
+        lines.append("\n结论：当前未发现可展示的告警或事件；如仍怀疑风险，可继续发起主机健康诊断或扩大时间窗口。")
+
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": "\n".join(lines),
+        "agent_name": "ResourceQueryAgent",
+        "tool_traces": traces,
+        "evidence_refs": [],
+        "evidences": [],
+        "recommended_actions": (["诊断生产环境 " + host_name + " 健康状态"] if host_name else ["过去1小时，esxi主机的cpu使用率和内存使用率"]),
+        "reasoning_summary": _reasoning_summary(
+            "用户希望查看 vCenter 告警和事件。",
+            "调用 VMware 告警和事件只读工具，按目标对象和最近 24 小时汇总。",
+            f"已返回告警 {len(alerts)} 条、事件 {len(events)} 条。",
+        ),
+    }
+
+
+def _format_report_number(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return str(round(float(value), 2))
+    return ""
+
+
+def _write_esxi_metric_report(metric_result: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+    CHAT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    file_name = f"vcenter-conn-vcenter-prod-esxi-usage-{now.strftime('%Y%m%dT%H%M%SZ')}.csv"
+    file_path = CHAT_EXPORT_DIR / file_name
+    columns = [
+        "host_id",
+        "name",
+        "cpu_current_percent",
+        "cpu_avg_percent",
+        "cpu_peak_percent",
+        "cpu_high_minutes",
+        "memory_current_percent",
+        "memory_avg_percent",
+        "memory_peak_percent",
+        "memory_high_minutes",
+        "primary_pressure",
+        "source",
+        "window",
+    ]
+    with file_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        for host in metric_result.get("host_series") or metric_result.get("top_hosts") or []:
+            if not isinstance(host, dict):
+                continue
+            writer.writerow(
+                {
+                    "host_id": host.get("host_id") or "",
+                    "name": host.get("name") or "",
+                    "cpu_current_percent": _format_report_number(host.get("cpu_current")),
+                    "cpu_avg_percent": _format_report_number(host.get("cpu_avg")),
+                    "cpu_peak_percent": _format_report_number(host.get("cpu_peak")),
+                    "cpu_high_minutes": host.get("cpu_high_minutes") or 0,
+                    "memory_current_percent": _format_report_number(host.get("memory_current")),
+                    "memory_avg_percent": _format_report_number(host.get("memory_avg")),
+                    "memory_peak_percent": _format_report_number(host.get("memory_peak")),
+                    "memory_high_minutes": host.get("memory_high_minutes") or 0,
+                    "primary_pressure": host.get("primary_pressure") or "",
+                    "source": metric_result.get("source") or "",
+                    "window": metric_result.get("window") or "",
+                }
+            )
+    record = register_export(file_path=file_path, file_name=file_name, session_id=session_id)
+    download_path = f"/api/v1/chat/exports/{record.export_id}/download"
+    payload = record.to_api_dict(download_url=download_path)
+    payload["export_columns"] = columns
+    payload["ignored_columns"] = []
+    return payload
+
+
+async def _build_esxi_metric_report_export_data(session_id: str, message: str) -> dict[str, Any]:
+    metric_result = _latest_esxi_metric_result(session_id)
+    traces: list[dict[str, Any]] = []
+    if not metric_result:
+        inventory = await _query_vcenter_prod_inventory()
+        if not inventory:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": "导出失败：无法获取 conn-vcenter-prod 的 ESXi 指标数据，请稍后重试。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary("用户希望导出 ESXi 使用率报表。", "尝试重新查询最近 1 小时 CPU/内存指标。", "指标查询失败。"),
+            }
+        intent = VmwareIntent(
+            domain="vmware",
+            action="metric",
+            resource_type="host",
+            environment="prod",
+            metric_name="cpu_usage_percent",
+            time_range_minutes=60,
+            step_seconds=300,
+            raw_text=message,
+        )
+        _, metric_result, traces, _, _ = await _build_host_cpu_memory_metric_result(intent, inventory)
+    export_data = _write_esxi_metric_report(metric_result, session_id)
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": (
+            "已导出生产环境 ESXi 主机过去 1 小时 CPU/内存使用率报表，可在下方下载文件。\n"
+            f"- 主机数量：{(metric_result.get('summary_stats') or {}).get('host_count', len(metric_result.get('host_series') or []))}\n"
+            f"- 数据来源：{metric_result.get('source') or 'unknown'}\n"
+            f"- 文件：{export_data.get('file_name')}"
+        ),
+        "agent_name": "ResourceQueryAgent",
+        "tool_traces": traces
+        + [
+            {
+                "tool_name": "vmware.export_esxi_metric_report",
+                "gateway": "api-bff",
+                "input_summary": '{"connection_id":"conn-vcenter-prod","window":"1h","metrics":"cpu,memory"}',
+                "output_summary": export_data.get("file_name", "esxi-usage.csv"),
+                "duration_ms": 0,
+                "status": "success",
+                "timestamp": _now(),
+            }
+        ],
+        "evidence_refs": [],
+        "evidences": [],
+        "export_file": export_data,
+        "export_columns": export_data.get("export_columns", []),
+        "ignored_columns": [],
+        "reasoning_summary": _reasoning_summary(
+            "用户希望导出 ESXi 资源使用率报表。",
+            "优先复用当前会话最近一次指标结果，没有缓存时重新查询。",
+            "已生成 CSV 下载文件。",
+        ),
+    }
+
+
+async def _build_host_vm_list_data(message: str, inventory: dict[str, Any]) -> dict[str, Any]:
+    host = _host_from_message(inventory, message)
+    if not host:
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": "未找到目标 ESXi 主机，请确认主机名称或 ID。",
+            "agent_name": "ResourceQueryAgent",
+            "tool_traces": [],
+            "evidence_refs": [],
+            "evidences": [],
+            "reasoning_summary": _reasoning_summary("用户希望查看主机上的虚拟机。", "读取 inventory 并匹配目标主机。", "未匹配到目标主机。"),
+        }
+    host_id, host_name = _host_identity(host)
+    vms = [
+        vm
+        for vm in inventory.get("virtual_machines", []) or []
+        if isinstance(vm, dict)
+        and (
+            str(vm.get("host_id") or "") == host_id
+            or str(vm.get("host_name") or "").lower() == host_name.lower()
+            or host_name.lower() in str(vm.get("host_name") or "").lower()
+        )
+    ]
+    lines = [
+        f"生产环境 {host_name} 上的虚拟机：",
+        "",
+        f"- 匹配数量：{len(vms)}",
+    ]
+    if vms:
+        lines.append("- 对象清单：")
+        for idx, vm in enumerate(vms[:20], 1):
+            lines.append(f"  {idx}. {row_brief(vm, 'vm')}")
+        if len(vms) > 20:
+            lines.append(f"  ... 还有 {len(vms) - 20} 台未展示")
+    else:
+        lines.append("- 对象清单：无匹配对象或当前 inventory 未包含 host_id 关联。")
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": "\n".join(lines),
+        "agent_name": "ResourceQueryAgent",
+        "tool_traces": [
+            {
+                "tool_name": "vmware.get_vcenter_inventory",
+                "gateway": "vmware-skill-gateway",
+                "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+                "output_summary": f"host={host_name};vms={len(vms)}",
+                "duration_ms": 0,
+                "status": "success",
+                "timestamp": _now(),
+            }
+        ],
+        "evidence_refs": [],
+        "evidences": [],
+        "recommended_actions": [f"诊断生产环境 {host_name} 健康状态", f"查看生产环境 {host_name} 最近事件"],
+        "reasoning_summary": _reasoning_summary("用户希望查看主机承载的虚拟机。", "基于实时 inventory 按 host_id/host_name 派生 VM 清单。", f"匹配到 {len(vms)} 台虚拟机。"),
+    }
+
+
+async def _build_host_datastore_latency_data(message: str, inventory: dict[str, Any]) -> dict[str, Any]:
+    host = _host_from_message(inventory, message)
+    if not host:
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": "未找到目标 ESXi 主机，无法查询关联 datastore 延迟。",
+            "agent_name": "ResourceQueryAgent",
+            "tool_traces": [],
+            "evidence_refs": [],
+            "evidences": [],
+            "reasoning_summary": _reasoning_summary("用户希望查看主机关联 datastore 延迟。", "读取 inventory 并匹配目标主机。", "未匹配到目标主机。"),
+        }
+    host_id, host_name = _host_identity(host)
+    related: list[dict[str, Any]] = []
+    for ds in inventory.get("datastores", []) or []:
+        if not isinstance(ds, dict):
+            continue
+        host_ids = {str(item) for item in ds.get("host_ids", []) or []}
+        host_names = {str(item).lower() for item in ds.get("host_names", []) or []}
+        if host_id in host_ids or host_name.lower() in host_names:
+            related.append(ds)
+    traces: list[dict[str, Any]] = [
+        {
+            "tool_name": "vmware.get_vcenter_inventory",
+            "gateway": "vmware-skill-gateway",
+            "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+            "output_summary": f"host={host_name};datastores={len(related)}",
+            "duration_ms": 0,
+            "status": "success",
+            "timestamp": _now(),
+        }
+    ]
+    rows: list[tuple[dict[str, Any], float | None, str]] = []
+    for ds in related[:10]:
+        metric_intent = VmwareIntent(
+            domain="vmware",
+            action="metric",
+            resource_type="datastore",
+            environment="prod",
+            metric_name="datastore_latency_ms",
+            time_range_minutes=60,
+            step_seconds=300,
+            aggregation="avg",
+            raw_text=message,
+        )
+        result = await _query_prometheus(metric_intent, ds)
+        value = (result or {}).get("value")
+        source = str((result or {}).get("source") or "unavailable")
+        rows.append((ds, float(value) if isinstance(value, (int, float)) else None, source))
+    lines = [
+        f"生产环境 {host_name} 关联 datastore 最近 1 小时延迟：",
+        "",
+        f"- 关联 datastore：{len(related)} 个",
+    ]
+    if rows:
+        lines.append("- 延迟指标：")
+        for idx, (ds, value, source) in enumerate(rows, 1):
+            value_text = f"{round(value, 2)}ms" if value is not None else "不可用"
+            lines.append(f"  {idx}. {row_name(ds)}：{value_text}（来源：{source}）")
+    else:
+        lines.append("- 延迟指标：无关联 datastore 或当前 inventory 未包含关联信息。")
+    if not any(value is not None for _, value, _ in rows):
+        lines.append("\n说明：当前未取得 datastore 延迟历史数据，可继续查看 datastore 容量或主机最近事件辅助判断。")
+    traces.append(
+        {
+            "tool_name": "prometheus.query_range",
+            "gateway": "prometheus",
+            "input_summary": '{"metric":"datastore_latency_ms","window":"1h"}',
+            "output_summary": f"datastores={len(rows)};available={sum(1 for _, value, _ in rows if value is not None)}",
+            "duration_ms": 0,
+            "status": "success" if any(value is not None for _, value, _ in rows) else "warning",
+            "timestamp": _now(),
+        }
+    )
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": "\n".join(lines),
+        "agent_name": "ResourceQueryAgent",
+        "tool_traces": traces,
+        "evidence_refs": [],
+        "evidences": [],
+        "recommended_actions": [f"查看生产环境 {host_name} 最近事件", f"诊断生产环境 {host_name} 健康状态"],
+        "reasoning_summary": _reasoning_summary("用户希望查看主机关联 datastore 延迟。", "基于 inventory 对齐关联 datastore，并查询最近 1 小时延迟指标。", "已返回可用延迟数据或不可用说明。"),
+    }
+
+
+def _format_vmware_relationship(intent: VmwareIntent, inventory: dict[str, Any]) -> tuple[str, str]:
+    rows = _resolve_vmware_rows(inventory, intent)
+    if not rows:
+        return "未在 conn-vcenter-prod 中找到匹配的 VMware 对象，请确认名称或 ID。", "not_found"
+    row = rows[0]
+    target = intent.relationship_target or ("datastore" if intent.resource_type == "host" else "host")
+    related: list[dict[str, Any]] = []
+    if intent.resource_type == "host" and target == "datastore":
+        host_id = str(row.get("host_id") or "")
+        host_name = str(row.get("name") or "")
+        for ds in inventory.get("datastores", []) or []:
+            host_ids = [str(item) for item in ds.get("host_ids", []) or []]
+            host_names = [str(item) for item in ds.get("host_names", []) or []]
+            if host_id in host_ids or host_name in host_names:
+                related.append(ds)
+        if not related and isinstance(row.get("datastores"), list):
+            related = [item for item in row["datastores"] if isinstance(item, dict)]
+    elif intent.resource_type == "host" and target == "vm":
+        host_id = str(row.get("host_id") or "")
+        related = [vm for vm in inventory.get("virtual_machines", []) or [] if isinstance(vm, dict) and str(vm.get("host_id") or "") == host_id]
+        if not related and isinstance(row.get("vms"), list):
+            related = [item for item in row["vms"] if isinstance(item, dict)]
+    elif intent.resource_type == "datastore" and target == "host":
+        host_ids = {str(item) for item in row.get("host_ids", []) or []}
+        host_names = {str(item) for item in row.get("host_names", []) or []}
+        related = [
+            host
+            for host in inventory.get("hosts", []) or []
+            if isinstance(host, dict) and (str(host.get("host_id") or "") in host_ids or str(host.get("name") or "") in host_names)
+        ]
+    lines = [
+        f"vCenter 生产环境（conn-vcenter-prod）{row_name(row)} 关联的 {RESOURCE_SPECS[target].label}：",
+        "",
+        f"- 匹配数量：{len(related)}",
+    ]
+    if related:
+        lines.append("- 对象清单：")
+        for idx, item in enumerate(related[:20], start=1):
+            lines.append(f"  {idx}. {row_brief(item, target)}")
+        if len(related) > 20:
+            lines.append(f"  ... 还有 {len(related) - 20} 个对象未展示")
+    else:
+        lines.append("- 对象清单：无匹配对象或当前 inventory 未包含该关联")
+    return "\n".join(lines), f"relationship_matches={len(related)}"
+
+
+async def _format_vmware_topn(intent: VmwareIntent, inventory: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str]:
+    rows = collection_for_intent(inventory, intent)
+    scored: list[tuple[float, dict[str, Any], str]] = []
+    for row in rows:
+        metric_result = await _query_prometheus(intent, row)
+        value = (metric_result or {}).get("value")
+        source = str((metric_result or {}).get("source") or "inventory")
+        if value is None:
+            value = _metric_value_from_row(row, intent.metric_name)
+        if value is None:
+            continue
+        scored.append((float(value), row, source))
+    reverse = intent.aggregation != "min" and "最低" not in intent.raw_text and "最小" not in intent.raw_text
+    scored.sort(key=lambda item: item[0], reverse=reverse)
+    top_rows = scored[: intent.limit]
+    unit = _metric_unit(intent.metric_name)
+    lines = [
+        f"vCenter 生产环境（conn-vcenter-prod）{_metric_label(intent.metric_name)} Top {intent.limit}：",
+        "",
+        f"- 排序方向：{'从高到低' if reverse else '从低到高'}",
+        "- 对象清单：",
+    ]
+    if top_rows:
+        for idx, (value, row, source) in enumerate(top_rows, start=1):
+            lines.append(f"  {idx}. {row_name(row)}：{round(value, 2)}{unit}（来源：{source}）")
+    else:
+        lines.append("  无可用指标数据")
+    trace = [
+        {
+            "tool_name": "prometheus.query" if top_rows and top_rows[0][2] == "prometheus" else "vmware.get_vcenter_inventory",
+            "gateway": "prometheus" if top_rows and top_rows[0][2] == "prometheus" else "inventory",
+            "input_summary": str(intent_to_dict(intent)),
+            "output_summary": f"ranked={len(top_rows)}",
+            "duration_ms": 0,
+            "status": "success" if top_rows else "error",
+            "timestamp": _now(),
+        }
+    ]
+    return "\n".join(lines), trace, f"topn={len(top_rows)}"
+
+
+def _format_vmware_query_result(intent: VmwareIntent, inventory: dict[str, Any]) -> tuple[str, str]:
+    if not intent.resource_type:
+        return _format_vcenter_summary(inventory), "summary"
+    spec = RESOURCE_SPECS[intent.resource_type]
+    label = filter_label(intent)
+    condition = f"（条件：{label}）" if label else ""
+
+    if intent.action == "count":
+        count = count_for_intent(inventory, intent)
+        unit = "台" if intent.resource_type in {"vm", "host"} else "个"
+        sep = " " if spec.label and spec.label[0].isascii() else ""
+        message = (
+            f"vCenter 生产环境（conn-vcenter-prod）当前共有 {count} {unit}{sep}{spec.label}{condition}。\n\n"
+            + _format_vcenter_summary(inventory)
+        )
+        return message, f"{intent.resource_type}_count={count}"
+
+    if intent.action in {"list", "detail"}:
+        rows = collection_for_intent(inventory, intent)
+        count = len(rows)
+        lines = [
+            f"vCenter 生产环境（conn-vcenter-prod）{spec.label}列表{condition}：",
+            "",
+            f"- 匹配数量：{count}",
+        ]
+        if rows:
+            lines.append("- 对象清单：")
+            for idx, row in enumerate(rows[:20], start=1):
+                lines.append(f"  {idx}. {row_brief(row, intent.resource_type)}")
+            if count > 20:
+                lines.append(f"  ... 还有 {count - 20} 个对象未展示")
+        else:
+            lines.append("- 对象清单：无匹配对象")
+        return "\n".join(lines), f"{intent.resource_type}_matches={count}"
+
+    return _format_vcenter_summary(inventory), "summary"
+
+
+async def _build_vmware_resource_query_data(intent: VmwareIntent) -> dict[str, Any]:
+    inventory = await _query_vcenter_prod_inventory()
+    if not inventory:
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": "获取 vCenter 生产环境资源数据失败：无法读取 conn-vcenter-prod 的实时 inventory，请稍后重试。",
+            "agent_name": "ResourceQueryAgent",
+            "tool_traces": [],
+            "evidence_refs": [],
+            "evidences": [],
+            "intent_recovery": {"vmware_intent": intent_to_dict(intent)},
+            "reasoning_summary": _reasoning_summary(
+                "用户希望查询 vCenter 生产环境资源。",
+                "按轻量 VMware 本体解析为结构化资源查询并调用 inventory。",
+                "inventory 查询失败。",
+            ),
+        }
+
+    if vmware_intent := (intent if intent.action in {"metric", "capacity", "relationship", "topn"} else None):
+        metric_result = None
+        recommended_actions: list[str] = []
+        if _is_host_cpu_memory_overview_intent(vmware_intent):
+            assistant_message, metric_result, traces, recommended_actions, output_summary = await _build_host_cpu_memory_metric_result(vmware_intent, inventory)
+        elif vmware_intent.action in {"metric", "capacity"}:
+            rows = _resolve_vmware_rows(inventory, vmware_intent)
+            if len(rows) > 1:
+                return _build_clarify_for_vmware(vmware_intent, rows)
+            assistant_message, traces, output_summary = await _format_vmware_metric_or_capacity(vmware_intent, inventory)
+        elif vmware_intent.action == "relationship":
+            rows = _resolve_vmware_rows(inventory, vmware_intent)
+            if vmware_intent.target_object and len(rows) > 1:
+                return _build_clarify_for_vmware(vmware_intent, rows)
+            assistant_message, output_summary = _format_vmware_relationship(vmware_intent, inventory)
+            traces = [
+                {
+                    "tool_name": "vmware.get_vcenter_inventory",
+                    "gateway": "vmware-skill-gateway",
+                    "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+                    "output_summary": output_summary,
+                    "duration_ms": 0,
+                    "status": "success",
+                    "timestamp": _now(),
+                }
+            ]
+        else:
+            assistant_message, traces, output_summary = await _format_vmware_topn(vmware_intent, inventory)
+        return {
+            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+            "assistant_message": assistant_message,
+            "agent_name": "ResourceQueryAgent",
+            "tool_traces": traces,
+            "evidence_refs": [],
+            "evidences": [],
+            "intent_recovery": {"vmware_intent": intent_to_dict(vmware_intent)},
+            "metric_result": metric_result,
+            "recommended_actions": recommended_actions,
+            "reasoning_summary": _reasoning_summary(
+                "用户希望查询 VMware 配置、容量、性能或关联关系。",
+                "按 VMware 本体解析为结构化只读查询，优先 Prometheus 历史指标，失败时回退 vCenter 实时数据。",
+                f"查询完成：{output_summary}。",
+            ),
+        }
+
+    assistant_message, output_summary = _format_vmware_query_result(intent, inventory)
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": assistant_message,
+        "agent_name": "ResourceQueryAgent",
+        "tool_traces": [
+            {
+                "tool_name": "vmware.get_vcenter_inventory",
+                "gateway": "vmware-skill-gateway",
+                "input_summary": '{"connection_id":"conn-vcenter-prod"}',
+                "output_summary": output_summary,
+                "duration_ms": 0,
+                "status": "success",
+                "timestamp": _now(),
+            }
+        ],
+        "evidence_refs": [],
+        "evidences": [],
+        "intent_recovery": {"vmware_intent": intent_to_dict(intent)},
+        "reasoning_summary": _reasoning_summary(
+            "用户希望查询 vCenter 生产环境资源。",
+            (
+                "按轻量 VMware 本体解析为 "
+                f"{intent.resource_type}.{intent.action}"
+                + (f" 并应用过滤条件：{filter_label(intent)}。" if intent.filters else "。")
+            ),
+            "已基于实时 inventory 返回确定性结果。",
+        ),
+    }
+
+
+def _build_vmware_write_block_data(intent: VmwareIntent) -> dict[str, Any]:
+    action_label = {
+        "power_on": "开机",
+        "power_off": "关机",
+        "migrate": "迁移",
+        "restart": "重启",
+        "delete": "删除",
+        "snapshot": "快照",
+    }.get(intent.action, intent.action)
+    resource_label = RESOURCE_SPECS[intent.resource_type].label if intent.resource_type else "VMware 对象"
+    return {
+        "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+        "assistant_message": (
+            f"已识别到高风险 VMware 执行意图：{resource_label} {action_label}。\n\n"
+            "当前策略默认拦截执行类操作，不会直接调用工具。请在审批/确认流程中补充目标对象、变更窗口和回退方案后再执行。"
+        ),
+        "agent_name": "ChangeGuardAgent",
+        "tool_traces": [
+            {
+                "tool_name": f"vmware.{intent.action}",
+                "gateway": "policy-gate",
+                "input_summary": str(intent_to_dict(intent)),
+                "output_summary": "blocked_until_approval",
+                "duration_ms": 0,
+                "status": "blocked",
+                "timestamp": _now(),
+            }
+        ],
+        "evidence_refs": [],
+        "evidences": [],
+        "intent_recovery": {"vmware_intent": intent_to_dict(intent)},
+        "approval_card": {
+            "title": f"确认 VMware {action_label} 操作",
+            "risk_level": intent.risk_level,
+            "action": intent.action,
+            "resource_type": intent.resource_type,
+            "environment": intent.environment,
+            "status": "required",
+        },
+        "recommended_actions": ["确认目标对象名称", "补充变更窗口", "补充回退方案", "通过审批后再执行"],
+        "reasoning_summary": _reasoning_summary(
+            "用户表达了 VMware 执行类意图。",
+            "按轻量 VMware 本体识别为高风险写操作，并应用默认审批拦截策略。",
+            "未执行任何副作用操作，已返回审批提示。",
+        ),
+    }
+
+
 def _predict_agent_and_plan(message: str) -> tuple[str, str]:
-    if _is_vcenter_prod_vm_export_query(message) or _is_vcenter_prod_vm_query(message):
+    intent = parse_vmware_intent(message)
+    if intent and intent.action in WRITE_ACTIONS:
+        return "ChangeGuardAgent", "识别 VMware 高风险执行意图并进入审批/确认门禁"
+    if intent and intent.action in {"count", "list", "summary", "detail", "metric", "capacity", "relationship", "topn"}:
+        return "ResourceQueryAgent", "基于 VMware 本体解析资源、容量、性能或关联查询"
+    if _is_vcenter_prod_vm_export_query(message) or _is_vcenter_prod_vm_query(message) or _is_vcenter_prod_host_query(message):
         return "ResourceQueryAgent", "识别资源查询/导出意图并调用 vCenter 资源接口"
     if _is_diagnostic_query_intent(message):
         return "RCAAgent", "收集运行时证据并执行故障诊断分析"
@@ -726,28 +2233,101 @@ def _append_analysis_step_events(message: dict[str, Any], steps: list[dict[str, 
 
 
 async def _run_orchestrator(session_id: str, message: str, history: list[dict], mode: str | None = None) -> dict | None:
-    async with httpx.AsyncClient(timeout=600) as client:
+    async with httpx.AsyncClient(timeout=600, trust_env=False) as client:
         try:
             endpoint = "/api/v1/orchestrate/chat-v2" if mode == "orchestrator_v2" else "/api/v1/orchestrate/chat"
+            inventory = None
+            resource_catalog: list[dict[str, Any]] = []
+            ui_context: dict[str, Any] = {}
+            should_prefetch_inventory = _should_prefetch_vmware_inventory(message, mode)
+            if should_prefetch_inventory:
+                logger.info("chat orchestrator prefetch start session_id=%s", session_id)
+                inventory = await _query_vcenter_prod_inventory()
+                resource_catalog = _build_vcenter_resource_catalog(inventory)
+                ui_context = {
+                    "connection_id": "conn-vcenter-prod",
+                    "environment": "prod",
+                }
+                if isinstance(inventory, dict) and inventory:
+                    ui_context["prefetched_inventory"] = inventory
+                logger.info(
+                    "chat orchestrator prefetch done session_id=%s catalog_count=%s has_prefetched=%s",
+                    session_id,
+                    len(resource_catalog),
+                    bool(ui_context.get("prefetched_inventory")),
+                )
+            elif mode == "orchestrator_v2" and (VMWARE_KEYWORDS.search(message) or ESX_SHORT_HOST_PATTERN.search(message)):
+                ui_context = {"connection_id": "conn-vcenter-prod", "environment": "prod"}
+            logger.info("chat orchestrator request start session_id=%s mode=%s endpoint=%s", session_id, mode, endpoint)
             resp = await client.post(
                 f"{ORCHESTRATOR_URL}{endpoint}",
-                json={"session_id": session_id, "message": message, "history": history},
+                json={
+                    "session_id": session_id,
+                    "message": message,
+                    "history": history,
+                    "resource_catalog": resource_catalog,
+                    "ui_context": ui_context,
+                },
             )
             payload = resp.json()
+            logger.info(
+                "chat orchestrator request done session_id=%s status_code=%s success=%s",
+                session_id,
+                resp.status_code,
+                payload.get("success") if isinstance(payload, dict) else None,
+            )
             if not payload.get("success"):
                 return None
             return payload.get("data")
-        except Exception:
+        except Exception as exc:
+            logger.exception("chat orchestrator request failed session_id=%s error=%s", session_id, exc)
             return None
 
 
 async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
+    vmware_intent = parse_vmware_intent(message)
     pending = _pending_intents.get(session_id) == PENDING_INTENT
     is_query = _is_vcenter_prod_vm_query(message)
+    is_host_query = _is_vcenter_prod_host_query(message)
     is_export_query = _is_vcenter_prod_vm_export_query(message)
     is_power_query = _is_vcenter_prod_vm_power_query(message)
     is_power_action = _is_vm_power_action_intent(message)
     is_confirm = _is_confirmation(message)
+
+    if _is_esxi_metric_report_export_query(message):
+        return await _build_esxi_metric_report_export_data(session_id, message)
+
+    if _is_vcenter_alert_event_query(message) and not _extract_host_target_from_message(message):
+        return await _build_vcenter_alert_event_data(message)
+
+    if _is_host_vm_list_followup(message) or _is_host_event_followup(message) or _is_host_datastore_latency_followup(message):
+        inventory = await _query_vcenter_prod_inventory()
+        if not inventory:
+            return {
+                "message_id": f"msg-{uuid.uuid4().hex[:10]}",
+                "assistant_message": "查询失败：无法读取 conn-vcenter-prod 的实时 inventory，请稍后重试。",
+                "agent_name": "ResourceQueryAgent",
+                "tool_traces": [],
+                "evidence_refs": [],
+                "evidences": [],
+                "reasoning_summary": _reasoning_summary(
+                    "用户点击了 VMware 指标结果的后续建议。",
+                    "需要读取实时 inventory 对齐目标对象后执行只读查询。",
+                    "inventory 查询失败。",
+                ),
+            }
+        if _is_host_vm_list_followup(message):
+            return await _build_host_vm_list_data(message, inventory)
+        if _is_host_event_followup(message):
+            return await _build_vcenter_alert_event_data(message, inventory)
+        if _is_host_datastore_latency_followup(message):
+            return await _build_host_datastore_latency_data(message, inventory)
+
+    if vmware_intent and vmware_intent.action in WRITE_ACTIONS:
+        return _build_vmware_write_block_data(vmware_intent)
+
+    if vmware_intent and vmware_intent.action in {"count", "list", "summary", "detail", "metric", "capacity", "relationship", "topn"}:
+        return await _build_vmware_resource_query_data(vmware_intent)
 
     if is_export_query:
         requested_columns, ignored_columns = _normalize_requested_columns(message)
@@ -1050,7 +2630,7 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
             ),
         }
 
-    if (pending and is_confirm) or (is_query and is_confirm):
+    if (pending and is_confirm) or (is_query and is_confirm) or is_query or is_host_query:
         _pending_intents.pop(session_id, None)
         inventory = await _query_vcenter_prod_inventory()
         if not inventory:
@@ -1069,9 +2649,16 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
             }
 
         summary = inventory.get("summary", {})
+        vm_count = summary.get("vm_count", len(inventory.get("virtual_machines", []) or []))
+        host_count = summary.get("host_count", len(inventory.get("hosts", []) or []))
+        headline = (
+            f"vCenter 生产环境（conn-vcenter-prod）当前共有 {host_count} 台 ESXi 主机。"
+            if is_host_query
+            else f"vCenter 生产环境（conn-vcenter-prod）当前共有 {vm_count} 台虚拟机。"
+        )
         return {
             "message_id": f"msg-{uuid.uuid4().hex[:10]}",
-            "assistant_message": _format_vcenter_summary(inventory),
+            "assistant_message": f"{headline}\n\n" + _format_vcenter_summary(inventory),
             "agent_name": "ResourceQueryAgent",
             "tool_traces": [
                 {
@@ -1094,22 +2681,6 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                 "用户希望获取 vCenter 生产环境资源概览。",
                 "调用 inventory 接口并汇总关键指标。",
                 "已返回 VM/主机/集群与健康摘要。",
-            ),
-        }
-
-    if is_query:
-        _pending_intents[session_id] = PENDING_INTENT
-        return {
-            "message_id": f"msg-{uuid.uuid4().hex[:10]}",
-            "assistant_message": "检测到你在查询 vCenter 生产环境资源。是否确认查询 目标连接=conn-vcenter-prod？回复“确认”继续。",
-            "agent_name": "ResourceQueryAgent",
-            "tool_traces": [],
-            "evidence_refs": [],
-            "evidences": [],
-            "reasoning_summary": _reasoning_summary(
-                "用户希望查询 vCenter 生产环境资源。",
-                "命中资源查询意图并进入确认门禁。",
-                "等待用户确认后继续执行。",
             ),
         }
 
@@ -1328,7 +2899,7 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
         }
 
     is_diag = _is_diagnostic_query_intent(message)
-    if is_diag and VMWARE_KEYWORDS.search(message):
+    if is_diag and (VMWARE_KEYWORDS.search(message) or ESX_SHORT_HOST_PATTERN.search(message) or HOST_FQDN_PATTERN.search(message)):
         inventory = await _query_vcenter_prod_inventory()
         if not inventory:
             return {
@@ -1418,6 +2989,22 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
             if isinstance(memory_percent, (int, float)) and memory_percent >= 90:
                 conclusion = "该主机内存压力偏高，建议尽快排查内存占用与回收。"
 
+            alerts, events, alert_event_traces = await _query_vcenter_alerts_and_events(matched_host, hours=24)
+            alert_lines = []
+            if alerts:
+                top_alert = alerts[0]
+                alert_lines.append(
+                    f"- 最近告警：{len(alerts)} 条，最高优先级："
+                    f"[{top_alert.get('severity') or top_alert.get('level') or 'info'}] "
+                    f"{top_alert.get('summary') or top_alert.get('message') or '无摘要'}"
+                )
+            else:
+                alert_lines.append("- 最近告警：未发现该主机关联告警")
+            if events:
+                alert_lines.append(f"- 最近事件：{len(events)} 条，最新：{events[0].get('message') or events[0].get('event_type') or events[0].get('type') or '事件'}")
+            else:
+                alert_lines.append("- 最近事件：无或当前事件源未返回数据")
+
             return {
                 "message_id": f"msg-{uuid.uuid4().hex[:10]}",
                 "assistant_message": (
@@ -1427,7 +3014,9 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                     f"- 总体状态：{overall_status}\n"
                     f"- CPU 使用率：{cpu_percent if cpu_percent is not None else 'N/A'}%\n"
                     f"- 内存使用率：{memory_percent if memory_percent is not None else 'N/A'}%\n"
-                    f"- 承载虚拟机数：{vm_count}\n\n"
+                    f"- 承载虚拟机数：{vm_count}\n"
+                    + "\n".join(alert_lines)
+                    + "\n\n"
                     f"结论：{conclusion}"
                 ),
                 "agent_name": "RCAAgent",
@@ -1441,8 +3030,9 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                         "status": "success",
                         "timestamp": _now(),
                     },
-                ],
-                "evidence_refs": ["ev-fallback-host-health"],
+                ]
+                + alert_event_traces,
+                "evidence_refs": ["ev-fallback-host-health", "ev-fallback-host-alert-events"],
                 "evidences": [
                     {
                         "evidence_id": "ev-fallback-host-health",
@@ -1454,6 +3044,13 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                         ),
                         "confidence": 0.93,
                         "timestamp": _now(),
+                    },
+                    {
+                        "evidence_id": "ev-fallback-host-alert-events",
+                        "source_type": "alert_event",
+                        "summary": f"主机 {host_name} 最近 24 小时告警 {len(alerts)} 条，事件 {len(events)} 条",
+                        "confidence": 0.85,
+                        "timestamp": _now(),
                     }
                 ],
                 "root_cause_candidates": [
@@ -1462,6 +3059,7 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                 "recommended_actions": [
                     "检查该主机最近告警与硬件事件",
                     "核对该主机承载虚拟机的资源占用与热点分布",
+                    f"查看生产环境 {host_name} 关联 datastore 延迟",
                 ],
                 "diagnosis_id": f"dg-{uuid.uuid4().hex[:12]}",
                 "reasoning_summary": _reasoning_summary(
@@ -1471,7 +3069,7 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
                 ),
             }
 
-    if is_diag and (VMWARE_KEYWORDS.search(message) or K8S_KEYWORDS.search(message)):
+    if is_diag and (VMWARE_KEYWORDS.search(message) or ESX_SHORT_HOST_PATTERN.search(message) or HOST_FQDN_PATTERN.search(message) or K8S_KEYWORDS.search(message)):
         return {
             "message_id": f"msg-{uuid.uuid4().hex[:10]}",
             "assistant_message": "诊断失败：fallback 路径当前未获取到该类型的实时数据，请稍后重试。",
@@ -1510,9 +3108,11 @@ async def _build_fallback_data(session_id: str, message: str) -> dict[str, Any]:
 
 async def _process_message(session_id: str, assistant_id: str, user_message: str, mode: str | None = None) -> None:
     try:
+        logger.info("chat task start session_id=%s assistant_id=%s mode=%s", session_id, assistant_id, mode)
         async with _state_lock:
             target = _find_message(session_id, assistant_id)
             if not target:
+                logger.warning("chat task missing target before start session_id=%s assistant_id=%s", session_id, assistant_id)
                 return
             _append_progress_event(target, "tool_invoking", "正在调用 Orchestrator 执行任务", "in_progress")
             history = [
@@ -1521,13 +3121,21 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
                 if m.get("role") in ("user", "assistant") and m.get("id") != assistant_id
             ]
 
-        data = await _run_orchestrator(session_id, user_message, history, mode)
-        if not data:
+        if _should_use_local_vcenter_resource_path(user_message):
+            logger.info("chat task using local vcenter resource path session_id=%s assistant_id=%s", session_id, assistant_id)
             data = await _build_fallback_data(session_id, user_message)
+        else:
+            data = await _run_orchestrator(session_id, user_message, history, mode)
+        if not data:
+            logger.info("chat task using fallback session_id=%s assistant_id=%s", session_id, assistant_id)
+            data = await _build_fallback_data(session_id, user_message)
+        else:
+            logger.info("chat task received orchestrator data session_id=%s assistant_id=%s kind=%s", session_id, assistant_id, data.get("kind"))
 
         async with _state_lock:
             target = _find_message(session_id, assistant_id)
             if not target:
+                logger.warning("chat task missing target during writeback session_id=%s assistant_id=%s", session_id, assistant_id)
                 return
 
             target["content"] = data.get("assistant_message", "")
@@ -1544,6 +3152,7 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
             target["contradictions"] = data.get("contradictions", [])
             target["recommended_actions"] = data.get("recommended_actions")
             target["diagnosis_id"] = data.get("diagnosis_id")
+            target["metric_result"] = data.get("metric_result")
             target["export_file"] = data.get("export_file")
             target["export_columns"] = data.get("export_columns")
             target["ignored_columns"] = data.get("ignored_columns")
@@ -1554,10 +3163,18 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
                 "已返回最终结果。",
             )
             target["kind"] = data.get("kind", "text")
+            target["diagnosis_id"] = data.get("diagnosis_id")
             target["intent_recovery"] = data.get("intent_recovery")
+            target["execution_intent"] = data.get("execution_intent")
+            target["risk_context"] = data.get("risk_context")
+            target["memory_refs"] = data.get("memory_refs", [])
+            target["recommended_actions"] = data.get("recommended_actions", [])
+            target["root_cause_candidates"] = data.get("root_cause_candidates", [])
             target["clarify_card"] = data.get("clarify_card")
             target["approval_card"] = data.get("approval_card")
             target["resume_card"] = data.get("resume_card")
+            target["rerun_result"] = data.get("rerun_result")
+            target["execution_progress"] = data.get("execution_progress")
             target["audit_timeline"] = data.get("audit_timeline")
             _append_analysis_step_events(target, data.get("analysis_steps", []))
             target["status"] = "completed"
@@ -1596,7 +3213,9 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
 
             _sessions[session_id]["updated_at"] = _now()
             _sessions[session_id]["message_count"] = len(_messages[session_id])
+            logger.info("chat task writeback completed session_id=%s assistant_id=%s", session_id, assistant_id)
     except Exception as exc:
+        logger.exception("chat task failed session_id=%s assistant_id=%s error=%s", session_id, assistant_id, exc)
         async with _state_lock:
             target = _find_message(session_id, assistant_id)
             if target:
@@ -1612,6 +3231,7 @@ async def _process_message(session_id: str, assistant_id: str, user_message: str
             _sessions[session_id]["updated_at"] = _now()
     finally:
         _message_tasks.pop(assistant_id, None)
+        logger.info("chat task end session_id=%s assistant_id=%s", session_id, assistant_id)
 
 
 @router.get("/sessions")

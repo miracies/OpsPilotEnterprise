@@ -1,0 +1,43 @@
+name: intent-understanding-regression
+
+on:
+  push:
+    paths:
+      - "services/langgraph-orchestrator/**"
+      - "apps/api-bff/**"
+      - "packages/shared-schema/**"
+      - "tests/**"
+      - ".github/workflows/intent-understanding-regression.yml"
+  pull_request:
+    paths:
+      - "services/langgraph-orchestrator/**"
+      - "apps/api-bff/**"
+      - "packages/shared-schema/**"
+      - "tests/**"
+      - ".github/workflows/intent-understanding-regression.yml"
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -e packages/shared-schema
+          python -m pip install -e services/langgraph-orchestrator
+          python -m pip install -e apps/api-bff
+
+      - name: Run orchestrator intent regressions
+        run: |
+          pytest tests/test_intent_understanding_regression.py -q
+          pytest tests/test_intent_understanding_dataset.py -q
+          pytest tests/test_intent_live_eval.py -q -rs

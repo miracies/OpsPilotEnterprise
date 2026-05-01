@@ -20,7 +20,19 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-_DEFAULT_DB_PATH = Path(__file__).resolve().parents[4] / "data" / "secrets.db"
+def _default_db_path() -> Path:
+    override = os.environ.get("OPSPILOT_DATA_DIR")
+    if override:
+        return Path(override) / "secrets.db"
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        candidate = parent / "data"
+        if candidate.exists() or parent.name == "app":
+            return candidate / "secrets.db"
+    return Path("/tmp/opspilot-data/secrets.db")
+
+
+_DEFAULT_DB_PATH = _default_db_path()
 DB_PATH: Path = Path(os.environ.get("OPSPILOT_SECRET_DB", str(_DEFAULT_DB_PATH)))
 
 _DDL = """
@@ -73,14 +85,20 @@ _SEED_SECRETS: list[dict[str, str]] = [
         "name": "vcenter-prod",
         "display_name": "vCenter 生产环境凭据",
         "secret_type": "vcenter",
-        "value": json.dumps({"username": "administrator@vsphere.local", "password": "VMware1!"}, ensure_ascii=False),
+        "value": json.dumps(
+            {
+                "username": os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local"),
+                "password": os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!"),
+            },
+            ensure_ascii=False,
+        ),
         "description": "vCenter production credentials",
     },
     {
         "name": "vcenter-dr",
         "display_name": "vCenter 灾备环境凭据",
         "secret_type": "vcenter",
-        "value": json.dumps({"username": "administrator@vsphere.local", "password": "ChangeMe-DR!"}, ensure_ascii=False),
+        "value": json.dumps({"username": "shaoyong.chen@vsphere.local", "password": "ChangeMe-DR!"}, ensure_ascii=False),
         "description": "vCenter DR credentials",
     },
     {
@@ -307,8 +325,8 @@ async def resolve_credential(credential_ref: str) -> dict[str, Any] | None:
             payload = None
         if secret_name == "vcenter-prod":
             return {
-                "username": os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local"),
-                "password": os.environ.get("VCENTER_PASSWORD", "VMware1!"),
+                "username": os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local"),
+                "password": os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!"),
             }
         return None
     return None

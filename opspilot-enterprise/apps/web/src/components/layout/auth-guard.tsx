@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useAuth } from "@/lib/auth";
 import { usePathname, useRouter } from "next/navigation";

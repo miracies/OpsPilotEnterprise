@@ -64,10 +64,16 @@ class ChatMessage(BaseModel):
     contradictions: list[dict] | None = None
     recommended_actions: list[str] | None = None
     agent_name: str | None = None
+    metric_result: dict | None = None
     export_file: dict | None = None
     export_columns: list[str] | None = None
     ignored_columns: list[str] | None = None
     status: Literal["in_progress", "completed", "failed"] | None = None
     progress_events: list[ProgressEvent] | None = None
     reasoning_summary: ReasoningSummary | None = None
+    execution_intent: dict | None = None
+    risk_context: dict | None = None
+    memory_refs: list[str] | None = None
+    rerun_result: dict | None = None
+    execution_progress: dict | None = None
     analysis_steps: list[dict] | None = None

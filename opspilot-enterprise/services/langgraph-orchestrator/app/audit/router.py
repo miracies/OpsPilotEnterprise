@@ -12,7 +12,24 @@ router = APIRouter(prefix="/api/v1/runs", tags=["audit"])
 @router.get("/{run_id}/audit")
 async def get_run_audit(run_id: str):
     events = list_audit_events(run_id)
-    decision_chain = [event.summary for event in events if event.event_type in {"RECOVER", "CLARIFY_CREATED", "APPROVE_CREATED", "APPROVE_DECIDED", "RESUME"}]
+    decision_chain = [
+        event.summary
+        for event in events
+        if event.event_type
+        in {
+            "RECOVER",
+            "CONTEXT_COMPLETED",
+            "NORMALIZED",
+            "DISAMBIGUATED",
+            "EXECUTION_INTENT_SET",
+            "MEMORY_HIT",
+            "RAG_RETRIEVED",
+            "CLARIFY_CREATED",
+            "APPROVE_CREATED",
+            "APPROVE_DECIDED",
+            "RESUME",
+        }
+    ]
     tool_outputs = [event.summary for event in events if event.event_type in {"PRE_EXEC", "POST_EXEC", "ROLLBACK"}]
     return make_success(
         {

@@ -26,6 +26,7 @@ import {
   Server,
   Boxes,
   Network,
+  BrainCircuit,
 } from "lucide-react";
 
 const navGroups = [
@@ -58,12 +59,13 @@ const navGroups = [
       { href: "/audit", label: "审计中心", icon: ClipboardList },
       { href: "/evidence", label: "证据中心", icon: FileSearch },
       { href: "/cases", label: "案例归档", icon: Archive },
+      { href: "/memory", label: "记忆中心", icon: BrainCircuit },
     ],
   },
   {
     label: "平台",
     items: [
-      { href: "/tools", label: "Tool Gateway", icon: Wrench },
+      { href: "/tools", label: "工具网关", icon: Wrench },
       { href: "/connections", label: "资源连接", icon: Plug },
       { href: "/secrets", label: "密钥管理", icon: KeyRound },
       { href: "/resources/vcenter", label: "vCenter 资源", icon: Server },
@@ -71,6 +73,7 @@ const navGroups = [
       { href: "/topology", label: "拓扑视图", icon: Network },
       { href: "/knowledge", label: "知识管理", icon: BookOpen },
       { href: "/policies", label: "策略管理", icon: Lock },
+      { href: "/memory-policies", label: "记忆策略", icon: BrainCircuit },
       { href: "/agents", label: "Agent 视图", icon: Bot },
       { href: "/settings", label: "系统配置", icon: Settings },
       { href: "/upgrade", label: "升级管理", icon: ArrowUpCircle },

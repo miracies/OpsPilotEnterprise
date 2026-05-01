@@ -14,6 +14,7 @@ declare -A SERVICES=(
   ["change-impact-service"]=8040
   ["evidence-aggregator"]=8050
   ["event-ingestion-service"]=8060
+  ["memory-service"]=8073
   ["langgraph-orchestrator"]=8010
 )
 
@@ -49,6 +50,7 @@ echo "  VMware Gateway:    http://localhost:8030"
 echo "  Change Impact:     http://localhost:8040"
 echo "  Evidence Agg:      http://localhost:8050"
 echo "  Event Ingestion:   http://localhost:8060"
+echo "  Memory Service:    http://localhost:8073"
 echo ""
 echo "Press Ctrl+C to stop all services."
 

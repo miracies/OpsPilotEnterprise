@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from opspilot_schema.interaction import ApprovalCreateRequest, ApprovalDecisionRequest, ApprovalRecord
 
 from app.storage.db import execute, query_one
+from app.storage.postgres import write_shadow_event
 
 
 def _now() -> str:
@@ -75,6 +76,7 @@ def create_approval(body: ApprovalCreateRequest) -> ApprovalRecord:
             record.expires_at,
         ),
     )
+    write_shadow_event("op_approval_requests", record.approval_id, record.model_dump())
     return record
 
 
@@ -119,7 +121,7 @@ def decide_approval(approval_id: str, body: ApprovalDecisionRequest) -> Approval
         ),
     )
     updated = query_one("SELECT * FROM op_approval_requests WHERE approval_id=?", (approval_id,))
-    return ApprovalRecord(
+    record = ApprovalRecord(
         approval_id=updated["approval_id"],
         run_id=updated["run_id"],
         summary=updated["summary"],
@@ -140,3 +142,5 @@ def decide_approval(approval_id: str, body: ApprovalDecisionRequest) -> Approval
         expires_at=updated["expires_at"],
         created_at=updated["created_at"],
     )
+    write_shadow_event("op_approval_requests", approval_id, record.model_dump())
+    return record

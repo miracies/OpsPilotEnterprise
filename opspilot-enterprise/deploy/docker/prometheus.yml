@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+
+scrape_configs:
+  - job_name: opspilot-vmware
+    metrics_path: /metrics/vmware
+    static_configs:
+      - targets:
+          - vmware-gateway:8030

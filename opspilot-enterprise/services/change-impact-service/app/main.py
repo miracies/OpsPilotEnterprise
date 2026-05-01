@@ -22,9 +22,9 @@ app = FastAPI(title="OpsPilot Change Impact Service")
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020").rstrip("/")
 GOVERNANCE_SERVICE_URL = os.environ.get("GOVERNANCE_SERVICE_URL", "http://127.0.0.1:8071").rstrip("/")
 
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 K8S_KUBECONFIG_PATH = os.environ.get("K8S_KUBECONFIG_PATH", r"C:\Users\mirac\.kube\config")
 
 

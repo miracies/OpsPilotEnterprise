@@ -23,6 +23,15 @@ class ClarifyChoice(BaseModel):
     label: str
 
 
+class ClarifyTargetCandidate(BaseModel):
+    id: str
+    label: str
+    type: str = "resource"
+    matched_by: str = ""
+    connection_id: str | None = None
+    environment: str | None = None
+
+
 class ClarifyRequest(BaseModel):
     interaction_id: str
     run_id: str
@@ -30,6 +39,7 @@ class ClarifyRequest(BaseModel):
     choices: list[str] = Field(default_factory=list, max_length=4)
     allow_free_text: bool = True
     reason_code: ClarifyReasonCode = "ambiguous_intent"
+    candidate_targets: list[ClarifyTargetCandidate] = Field(default_factory=list)
     expires_at: str
     created_at: str
     created_by: str = "system"
@@ -49,6 +59,7 @@ class ClarifyCreateRequest(BaseModel):
     choices: list[str] = Field(default_factory=list, max_length=4)
     allow_free_text: bool = True
     reason_code: ClarifyReasonCode = "ambiguous_intent"
+    candidate_targets: list[ClarifyTargetCandidate] = Field(default_factory=list)
     expires_in_seconds: int = 900
 
 

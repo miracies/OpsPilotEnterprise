@@ -13,6 +13,7 @@ $services = @(
     @{ Name = "change-impact-service";  Port = 8040; Path = "$root\services\change-impact-service" },
     @{ Name = "evidence-aggregator";    Port = 8050; Path = "$root\services\evidence-aggregator" },
     @{ Name = "topology-service";      Port = 8090; Path = "$root\services\topology-service" },
+    @{ Name = "memory-service";        Port = 8073; Path = "$root\services\memory-service" },
     @{ Name = "event-ingestion-service"; Port = 8060; Path = "$root\services\event-ingestion-service" },
     @{ Name = "langgraph-orchestrator"; Port = 8010; Path = "$root\services\langgraph-orchestrator" },
     @{ Name = "api-bff";               Port = 8000; Path = "$root\apps\api-bff" }
@@ -38,6 +39,7 @@ Write-Host "  VMware Gateway:    http://localhost:8030"
 Write-Host "  Change Impact:     http://localhost:8040"
 Write-Host "  Evidence Agg:      http://localhost:8050"
 Write-Host "  Event Ingestion:   http://localhost:8060"
+Write-Host "  Memory Service:    http://localhost:8073"
 Write-Host "`nPress Ctrl+C to stop all services.`n"
 
 try {

@@ -20,3 +20,5 @@ export * from "./secret";
 export * from "./resource";
 export * from "./execution";
 export * from "./topology";
+export * from "./memory-rag";
+export * from "./memory";

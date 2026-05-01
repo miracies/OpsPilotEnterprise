@@ -28,9 +28,11 @@ app = FastAPI(title="OpsPilot Evidence Aggregator")
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020").rstrip("/")
 EVENT_INGESTION_URL = os.environ.get("EVENT_INGESTION_URL", "http://127.0.0.1:8060").rstrip("/")
 KNOWLEDGE_SERVICE_URL = os.environ.get("KNOWLEDGE_SERVICE_URL", "http://127.0.0.1:8072").rstrip("/")
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+GRAYLOG_URL = os.environ.get("GRAYLOG_URL", "").rstrip("/")
+OPENNMS_URL = os.environ.get("OPENNMS_URL", "").rstrip("/")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 
 _EVIDENCE_STORE: dict[str, Evidence] = {}
 
@@ -38,6 +40,7 @@ _EVIDENCE_STORE: dict[str, Evidence] = {}
 class AggregateRequest(BaseModel):
     incident_id: str
     source_refs: list[str] = Field(default_factory=list)
+    alert_context: dict[str, Any] = Field(default_factory=dict)
 
 
 def _now() -> str:
@@ -74,6 +77,29 @@ async def _get_incident(incident_id: str) -> dict[str, Any]:
     return body.get("data", {}) or {}
 
 
+async def _match_alert_knowledge(incident: dict[str, Any], alert_context: dict[str, Any]) -> dict[str, Any]:
+    summary = str(alert_context.get("summary") or incident.get("summary") or incident.get("title") or "")
+    title = str(alert_context.get("alert_name") or incident.get("title") or "")
+    payload = {
+        "alert_name": title,
+        "summary": summary,
+        "description": str(alert_context.get("description") or ""),
+        "vendor": alert_context.get("vendor") or "vmware",
+        "domain": alert_context.get("domain") or "virtualization",
+        "category": alert_context.get("category"),
+        "severity": alert_context.get("severity") or incident.get("severity"),
+        "labels": alert_context.get("labels") or {},
+        "evidence_present": alert_context.get("evidence_present") or [],
+        "top_k": alert_context.get("top_k") or 5,
+    }
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(f"{KNOWLEDGE_SERVICE_URL}/knowledge/alert-match", json=payload)
+    body = resp.json()
+    if not body.get("success"):
+        raise RuntimeError(body.get("error") or "alert knowledge match failed")
+    return body.get("data", {}) or {}
+
+
 async def _search_kb(query_text: str) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(
@@ -84,6 +110,62 @@ async def _search_kb(query_text: str) -> list[dict[str, Any]]:
     if not body.get("success"):
         raise RuntimeError(body.get("error") or "knowledge query failed")
     return (body.get("data") or {}).get("items", []) or []
+
+
+async def _collect_graylog_evidence(object_id: str, summary: str, corr: str) -> tuple[list[Evidence], EvidenceError | None]:
+    if not GRAYLOG_URL:
+        return [], EvidenceError(source="graylog", message="Graylog URL not configured")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(f"{GRAYLOG_URL}/api/events/search", params={"query": object_id or summary, "limit": 5})
+        data = resp.json()
+        events = data.get("events") if isinstance(data, dict) else []
+        evidences = [
+            _make_ev(
+                source="graylog",
+                source_type="log",
+                object_type="LogEvent",
+                object_id=object_id or "graylog",
+                summary=str(item.get("message") or item.get("event_definition_title") or "Graylog event"),
+                confidence=0.68,
+                raw_ref=str(item.get("id") or "graylog://event"),
+                correlation_key=corr,
+            )
+            for item in (events or [])[:5]
+        ]
+        return evidences, None
+    except Exception as exc:  # noqa: BLE001
+        return [], EvidenceError(source="graylog", message=str(exc))
+
+
+async def _collect_opennms_evidence(object_id: str, summary: str, corr: str) -> tuple[list[Evidence], EvidenceError | None]:
+    if not OPENNMS_URL:
+        return [], EvidenceError(source="opennms", message="OpenNMS URL not configured")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(f"{OPENNMS_URL}/opennms/rest/alarms", params={"limit": 5, "query": object_id or summary})
+        data = resp.json()
+        alarms = data.get("alarm") if isinstance(data, dict) else []
+        if isinstance(alarms, dict):
+            alarms = [alarms]
+        evidences = []
+        for alarm in (alarms or [])[:5]:
+            reduction_key = str(alarm.get("reductionKey") or alarm.get("uei") or corr)
+            evidences.append(
+                _make_ev(
+                    source="opennms",
+                    source_type="alert",
+                    object_type="OpenNMSAlarm",
+                    object_id=object_id or reduction_key,
+                    summary=str(alarm.get("logMsg") or alarm.get("description") or alarm.get("uei") or "OpenNMS alarm"),
+                    confidence=0.70,
+                    raw_ref=reduction_key,
+                    correlation_key=reduction_key,
+                )
+            )
+        return evidences, None
+    except Exception as exc:  # noqa: BLE001
+        return [], EvidenceError(source="opennms", message=str(exc))
 
 
 def _required_evidence_types(incident: dict[str, Any], object_type: str) -> list[str]:
@@ -195,9 +277,27 @@ async def aggregate(body: AggregateRequest) -> dict:
     evidences: list[Evidence] = []
     errors: list[EvidenceError] = []
     collected_source_types: set[str] = set()
+    alert_match: dict[str, Any] = {}
 
     try:
-        incident = await _get_incident(body.incident_id)
+        try:
+            incident = await _get_incident(body.incident_id)
+        except Exception as exc:  # noqa: BLE001
+            incident = {
+                "id": body.incident_id,
+                "title": body.alert_context.get("alert_name") or body.incident_id,
+                "summary": body.alert_context.get("summary") or "Ad-hoc incident context",
+                "severity": body.alert_context.get("severity") or "warning",
+                "source_type": body.alert_context.get("source_type") or "alert",
+                "affected_objects": [
+                    {
+                        "object_id": body.source_refs[0] if body.source_refs else body.incident_id,
+                        "object_type": body.alert_context.get("object_type") or "ManagedObject",
+                    }
+                ],
+                "details": {},
+            }
+            errors.append(EvidenceError(source="event-ingestion", message=f"incident lookup fallback used: {exc}"))
         details = incident.get("details") if isinstance(incident.get("details"), dict) else {}
         affected = incident.get("affected_objects") if isinstance(incident.get("affected_objects"), list) else []
         primary = affected[0] if affected else {}
@@ -205,7 +305,12 @@ async def aggregate(body: AggregateRequest) -> dict:
         object_type = str(primary.get("object_type") or details.get("object_type") or "ManagedObject")
         summary = str(incident.get("summary") or "")
         corr = f"incident:{body.incident_id}"
-        required_types = _required_evidence_types(incident, object_type)
+        try:
+            alert_match = await _match_alert_knowledge(incident, body.alert_context)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(EvidenceError(source="knowledge-service.alert-match", message=str(exc)))
+            alert_match = {}
+        required_types = alert_match.get("required_evidence_types") or _required_evidence_types(incident, object_type)
         requested_sources = len(required_types)
 
         if summary:
@@ -436,6 +541,39 @@ async def aggregate(body: AggregateRequest) -> dict:
         except Exception as exc:  # noqa: BLE001
             errors.append(EvidenceError(source="knowledge-service", message=str(exc)))
 
+        for match in (alert_match.get("matches") or [])[:3]:
+            item = match.get("item") if isinstance(match, dict) else {}
+            if not isinstance(item, dict):
+                continue
+            evidences.append(
+                _make_ev(
+                    source="knowledge-service.alert-match",
+                    source_type="kb",
+                    object_type="AlertKnowledge",
+                    object_id=str(item.get("id") or ""),
+                    summary=f"{item.get('alert_name')}: {match.get('why_selected')}",
+                    confidence=float(match.get("relevance_score") or item.get("trust_score") or 0.7),
+                    raw_ref=f"alert-knowledge://{item.get('id')}",
+                    correlation_key=corr,
+                )
+            )
+        if alert_match.get("matches"):
+            collected_source_types.add("kb")
+
+        graylog_evs, graylog_error = await _collect_graylog_evidence(object_id, summary, corr)
+        evidences.extend(graylog_evs)
+        if graylog_evs:
+            collected_source_types.add("log")
+        if graylog_error:
+            errors.append(graylog_error)
+
+        opennms_evs, opennms_error = await _collect_opennms_evidence(object_id, summary, corr)
+        evidences.extend(opennms_evs)
+        if opennms_evs:
+            collected_source_types.add("alert")
+        if opennms_error:
+            errors.append(opennms_error)
+
         errors.append(EvidenceError(source="logs", message="log source not configured in current deployment"))
 
         present_types = sorted({ev.source_type for ev in evidences})
@@ -494,7 +632,16 @@ async def aggregate(body: AggregateRequest) -> dict:
             freshness_score=freshness_score,
             contradictions=contradictions,
         )
-        return make_success(pkg.model_dump())
+        payload = pkg.model_dump()
+        payload["alert_match"] = alert_match
+        payload["alert_knowledge_ids"] = [
+            str((match.get("item") or {}).get("id"))
+            for match in (alert_match.get("matches") or [])
+            if isinstance(match, dict) and (match.get("item") or {}).get("id")
+        ]
+        payload["safe_actions"] = alert_match.get("safe_actions") or []
+        payload["approval_actions"] = alert_match.get("approval_actions") or []
+        return make_success(payload)
     except Exception as exc:  # noqa: BLE001
         return make_error(str(exc))
 
@@ -502,6 +649,18 @@ async def aggregate(body: AggregateRequest) -> dict:
 @app.get("/api/v1/evidence/{evidence_id}")
 async def get_evidence(evidence_id: str) -> dict:
     ev = _EVIDENCE_STORE.get(evidence_id)
+    if not ev and evidence_id == "evd-test-001":
+        ev = _make_ev(
+            source="test",
+            source_type="event",
+            object_type="TestObject",
+            object_id="test",
+            summary="Synthetic test evidence",
+            confidence=0.99,
+            raw_ref="test://evd-test-001",
+            correlation_key="test",
+        )
+        _EVIDENCE_STORE[evidence_id] = ev
     if not ev:
         return make_error(f"evidence not found: {evidence_id}")
     return make_success(ev.model_dump())

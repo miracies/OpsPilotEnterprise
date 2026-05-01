@@ -19,3 +19,13 @@ async def recover_intent(body: dict):
             return resp.json()
         except httpx.HTTPError as exc:
             return make_error(f"Orchestrator unreachable: {exc}")
+
+
+@router.post("/analyze")
+async def analyze_intent(body: dict):
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post(f"{ORCHESTRATOR_URL}/api/v1/intent/analyze", json=body)
+            return resp.json()
+        except httpx.HTTPError as exc:
+            return make_error(f"Orchestrator unreachable: {exc}")

@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 
 def _get_client():
+    for module_name in [k for k in sys.modules if k == "app" or k.startswith("app.")]:
+        del sys.modules[module_name]
     from app.main import app
     return TestClient(app)
 
@@ -62,3 +64,12 @@ def test_get_case_detail():
     data = resp.json()["data"]
     assert data["id"] == "CASE-20260320"
     assert "root_cause_summary" in data
+
+
+def test_cases_similar_returns_matched_fields():
+    client = _get_client()
+    resp = client.post("/api/v1/cases/similar", json={"summary": "datastore snapshot capacity", "tags": ["snapshot"], "limit": 3})
+    assert resp.status_code == 200
+    items = resp.json()["data"]["items"]
+    assert items
+    assert "matched_fields" in items[0]

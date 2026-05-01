@@ -22,6 +22,7 @@ KUBERNETES_GATEWAY_URL = os.environ.get("KUBERNETES_GATEWAY_URL", "http://localh
 CHANGE_IMPACT_URL = os.environ.get("CHANGE_IMPACT_URL", "http://localhost:8040")
 GOVERNANCE_SERVICE_URL = os.environ.get("GOVERNANCE_SERVICE_URL", "http://127.0.0.1:8071").rstrip("/")
 STRICT_SCHEMA_VALIDATION = os.environ.get("STRICT_SCHEMA_VALIDATION", "true").lower() == "true"
+POLICY_FAIL_MODE = os.environ.get("POLICY_FAIL_MODE", "allow_readonly").strip().lower()
 BROADCOM_SEARCH_URL = "https://support.broadcom.com/web/ecx/search"
 BROADCOM_SEARCH_DEFAULT_SEGMENT = os.environ.get("BROADCOM_SEARCH_DEFAULT_SEGMENT", "VC")
 BROADCOM_SEARCH_DEFAULT_LANGUAGE = os.environ.get("BROADCOM_SEARCH_DEFAULT_LANGUAGE", "en_US")
@@ -237,7 +238,12 @@ async def _evaluate_policy(tool: dict[str, Any], body: InvokeBody) -> tuple[bool
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(f"{GOVERNANCE_SERVICE_URL}/policies/evaluate", json=context)
-        result = resp.json()
+        try:
+            result = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            if action_type == "read" and POLICY_FAIL_MODE in {"allow_readonly", "allow-readonly"}:
+                return True, f"policy bypassed for readonly: invalid governance response ({exc})"
+            return False, f"policy service unavailable: invalid governance response ({exc})"
         if not result.get("success"):
             return False, result.get("error") or "policy evaluation failed"
         data = result.get("data") or {}
@@ -248,6 +254,8 @@ async def _evaluate_policy(tool: dict[str, Any], body: InvokeBody) -> tuple[bool
             return False, reason or "approval required"
         return allowed or body.dry_run, reason
     except Exception as exc:  # noqa: BLE001
+        if action_type == "read" and POLICY_FAIL_MODE in {"allow_readonly", "allow-readonly"}:
+            return True, f"policy bypassed for readonly: {exc}"
         return False, f"policy service unavailable: {exc}"
 
 

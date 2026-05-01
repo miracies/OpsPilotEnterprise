@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from opspilot_schema.resume import AuditEvent
 
 from app.storage.db import execute, query_all
+from app.storage.postgres import write_shadow_event
 
 
 def _now() -> str:
@@ -51,6 +52,7 @@ def append_audit_event(
             event.created_at,
         ),
     )
+    write_shadow_event("op_audit_events", event.event_id, event.model_dump())
     return event
 
 

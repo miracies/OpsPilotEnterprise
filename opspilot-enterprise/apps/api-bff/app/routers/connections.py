@@ -55,7 +55,7 @@ CATEGORIES = {
     "notification": "Notification",
 }
 
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
 VCENTER_DR_ENDPOINT = os.environ.get("VCENTER_DR_ENDPOINT", "https://vcenter-dr.corp.local:443/sdk")
 
 MOCK_CONNECTIONS: list[dict[str, Any]] = [

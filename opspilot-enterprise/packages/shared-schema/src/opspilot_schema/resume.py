@@ -6,6 +6,12 @@ from pydantic import BaseModel, Field
 
 AuditEventType = Literal[
     "RECOVER",
+    "CONTEXT_COMPLETED",
+    "NORMALIZED",
+    "DISAMBIGUATED",
+    "EXECUTION_INTENT_SET",
+    "MEMORY_HIT",
+    "RAG_RETRIEVED",
     "CLARIFY_CREATED",
     "CLARIFY_ANSWERED",
     "APPROVE_CREATED",
@@ -21,6 +27,10 @@ AuditEventType = Literal[
     "vmware_kb_search_completed",
     "vmware_kb_search_no_hit",
     "vmware_kb_search_failed",
+    "generic_qa_started",
+    "generic_qa_retrieved",
+    "generic_qa_completed",
+    "generic_qa_fallback",
 ]
 ActorType = Literal["user", "system", "agent", "tool"]
 CheckpointStatus = Literal["safe", "waiting", "failed", "rolled_back"]

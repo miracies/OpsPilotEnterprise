@@ -45,6 +45,24 @@ export function ClarifyCard({
           </Button>
         ))}
       </div>
+      {record.candidate_targets?.length > 0 && (
+        <div className="mt-3 rounded-lg border border-white bg-white/80 p-2">
+          <p className="text-xs font-medium text-slate-700">候选目标对象</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {record.candidate_targets.map((target) => (
+              <Button
+                key={`${target.type}-${target.id}`}
+                size="sm"
+                variant="secondary"
+                disabled={submitting || !!done}
+                onClick={() => void submit(target.label)}
+              >
+                {target.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
       {record.allow_free_text && (
         <div className="mt-3 space-y-2">
           <textarea

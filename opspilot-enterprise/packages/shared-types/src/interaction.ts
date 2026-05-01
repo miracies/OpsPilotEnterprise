@@ -15,6 +15,15 @@ export interface ResourceScope {
   resources: ResourceRef[];
 }
 
+export interface ClarifyTargetCandidate {
+  id: string;
+  label: string;
+  type: string;
+  matched_by: string;
+  connection_id?: string | null;
+  environment?: string | null;
+}
+
 export interface ClarifyRecord {
   interaction_id: string;
   run_id: string;
@@ -22,6 +31,7 @@ export interface ClarifyRecord {
   choices: string[];
   allow_free_text: boolean;
   reason_code: "ambiguous_intent" | "missing_slot" | "conflicting_resource" | "unsafe_default";
+  candidate_targets: ClarifyTargetCandidate[];
   status: "pending" | "answered" | "approved" | "rejected" | "expired";
   expires_at: string;
   created_at: string;

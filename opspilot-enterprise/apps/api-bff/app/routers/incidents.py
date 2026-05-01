@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from opspilot_schema.envelope import make_success, make_error
@@ -25,10 +25,13 @@ class AnalysisPreferenceBody(BaseModel):
 
 
 @router.get("")
-async def list_incidents():
+async def list_incidents(view: str = Query("summary"), limit: int = Query(50, ge=1, le=200)):
     async with httpx.AsyncClient(timeout=10) as client:
         try:
-            resp = await client.get(f"{EVENT_INGESTION_URL}/api/v1/incidents")
+            resp = await client.get(
+                f"{EVENT_INGESTION_URL}/api/v1/incidents",
+                params={"view": view, "limit": limit},
+            )
             return resp.json()
         except httpx.HTTPError as exc:
             return make_error(f"Event ingestion unreachable: {exc}")

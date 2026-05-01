@@ -9,6 +9,7 @@ RecoveryDecision = Literal["recovered", "clarify_required", "rejected"]
 RiskLevel = Literal["L0", "L1", "L2", "L3", "L4"]
 SlotSource = Literal["user", "memory", "cmdb", "tool_discovery", "inferred"]
 EvidenceSourceType = Literal["session", "knowledge", "cmdb", "tool_discovery"]
+ExecutionIntentMode = Literal["read", "plan", "execute"]
 
 
 class SlotValue(BaseModel):
@@ -31,6 +32,19 @@ class ScoreBreakdown(BaseModel):
     slot_completeness: float = 0.0
     memory_boost: float = 0.0
     llm_rerank: float = 0.0
+    domain_gate_score: float = 0.0
+    target_resolution_score: float = 0.0
+
+
+class ResolutionRef(BaseModel):
+    ref_id: str
+    name: str
+    type: str
+    matched_by: str = ""
+    connection_id: str | None = None
+    environment: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    score: float = 0.0
 
 
 class IntentCandidate(BaseModel):
@@ -48,6 +62,11 @@ class IntentCandidate(BaseModel):
     inferred_environment: Optional[str] = None
     inferred_risk_level: Optional[RiskLevel] = None
     evidence: list[EvidenceRef] = Field(default_factory=list)
+    target_object_raw: str | None = None
+    target_object_resolved: str | None = None
+    target_type: str | None = None
+    resolution_confidence: float = 0.0
+    resolution_refs: list[ResolutionRef] = Field(default_factory=list)
 
 
 class IntentRecoveryRun(BaseModel):
@@ -92,3 +111,40 @@ class IntentRecoverInput(BaseModel):
     history: list[dict[str, Any]] = Field(default_factory=list)
     memory: list[str] = Field(default_factory=list)
     resource_catalog: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExecutionIntent(BaseModel):
+    mode: ExecutionIntentMode = "read"
+    reason: str = ""
+    target_tool: str | None = None
+    guardrails: list[str] = Field(default_factory=list)
+
+
+class RiskContext(BaseModel):
+    environment: str = "unknown"
+    resource_scope: Literal["single", "multiple", "cluster", "global"] = "single"
+    object_count: int = 1
+
+
+class IntentAnalyzeInput(IntentRecoverInput):
+    ui_context: dict[str, Any] = Field(default_factory=dict)
+    prefer_execute: bool | None = None
+
+
+class IntentAnalyzeResponse(BaseModel):
+    run_id: str
+    decision: RecoveryDecision
+    selected_intent: IntentCandidate | None = None
+    candidates: list[IntentCandidate] = Field(default_factory=list)
+    execution_intent: ExecutionIntent = Field(default_factory=ExecutionIntent)
+    risk_context: RiskContext = Field(default_factory=RiskContext)
+    context_hints: dict[str, Any] = Field(default_factory=dict)
+    normalized_utterance: str
+    memory_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    clarify_reasons: list[str] = Field(default_factory=list)
+    rejected_reasons: list[str] = Field(default_factory=list)
+    clarify_card: dict[str, Any] | None = None
+    approval_card: dict[str, Any] | None = None
+    rag_plan: dict[str, Any] | None = None
+    run: IntentRecoveryRun

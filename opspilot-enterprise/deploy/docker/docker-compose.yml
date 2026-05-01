@@ -1,7 +1,32 @@
-version: "3.9"
+
+x-opspilot-env: &opspilot-env
+  env_file:
+    - ../../.env
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: opspilot
+      POSTGRES_USER: opspilot
+      POSTGRES_PASSWORD: opspilot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  neo4j:
+    image: neo4j:5-community
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/opspilot-memory
+    volumes:
+      - neo4jdata:/data
+
   web:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: apps/web/Dockerfile
@@ -13,6 +38,7 @@ services:
       - api-bff
 
   api-bff:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: apps/api-bff/Dockerfile
@@ -21,13 +47,18 @@ services:
     environment:
       ORCHESTRATOR_URL: http://orchestrator:8010
       TOOL_GATEWAY_URL: http://tool-gateway:8020
+      VMWARE_GATEWAY_URL: http://vmware-gateway:8030
+      KUBERNETES_GATEWAY_URL: http://kubernetes-gateway:8080
       EVENT_INGESTION_URL: http://event-ingestion:8060
+      PROMETHEUS_URL: http://prometheus:9090
       APPROVAL_CENTER_URL: http://approval-center:8070
       GOVERNANCE_SERVICE_URL: http://governance:8071
       KNOWLEDGE_SERVICE_URL: http://knowledge:8072
+      MEMORY_SERVICE_URL: http://memory-service:8073
       TOPOLOGY_SERVICE_URL: http://topology-service:8090
 
   orchestrator:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/langgraph-orchestrator/Dockerfile
@@ -38,8 +69,15 @@ services:
       CHANGE_IMPACT_SERVICE_URL: http://change-impact:8040
       EVIDENCE_AGGREGATOR_URL: http://evidence-aggregator:8050
       APPROVAL_CENTER_URL: http://approval-center:8070
+      ORCHESTRATOR_POSTGRES_DSN: postgresql://opspilot:opspilot@postgres:5432/opspilot
+      KNOWLEDGE_SERVICE_URL: http://knowledge:8072
+      MEMORY_SERVICE_URL: http://memory-service:8073
+    depends_on:
+      - postgres
+      - memory-service
 
   tool-gateway:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/tool-gateway/Dockerfile
@@ -52,13 +90,28 @@ services:
       GOVERNANCE_SERVICE_URL: http://governance:8071
 
   vmware-gateway:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/vmware-skill-gateway/Dockerfile
     ports:
       - "8030:8030"
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - vmware-gateway
+
   kubernetes-gateway:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/kubernetes-skill-gateway/Dockerfile
@@ -66,20 +119,30 @@ services:
       - "8080:8080"
 
   change-impact:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/change-impact-service/Dockerfile
     ports:
       - "8040:8040"
+    environment:
+      TOOL_GATEWAY_URL: http://tool-gateway:8020
+      GOVERNANCE_SERVICE_URL: http://governance:8071
 
   evidence-aggregator:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/evidence-aggregator/Dockerfile
     ports:
       - "8050:8050"
+    environment:
+      TOOL_GATEWAY_URL: http://tool-gateway:8020
+      EVENT_INGESTION_URL: http://event-ingestion:8060
+      KNOWLEDGE_SERVICE_URL: http://knowledge:8072
 
   topology-service:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/topology-service/Dockerfile
@@ -87,15 +150,39 @@ services:
       - "8090:8090"
 
   event-ingestion:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/event-ingestion-service/Dockerfile
     ports:
       - "8060:8060"
+    environment:
+      TOOL_GATEWAY_URL: http://tool-gateway:8020
+      EVIDENCE_AGGREGATOR_URL: http://evidence-aggregator:8050
+      GOVERNANCE_SERVICE_URL: http://governance:8071
+      MEMORY_SERVICE_URL: http://memory-service:8073
 
-  # ── P1 Services ────────────────────────────────────────────────────────────
+  memory-service:
+    <<: *opspilot-env
+    build:
+      context: ../../
+      dockerfile: services/memory-service/Dockerfile
+    ports:
+      - "8073:8073"
+    environment:
+      MEMORY_POSTGRES_DSN: postgresql://opspilot:opspilot@postgres:5432/opspilot
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: opspilot-memory
+      KNOWLEDGE_SERVICE_URL: http://knowledge:8072
+    depends_on:
+      - postgres
+      - neo4j
+
+  # 鈹€鈹€ P1 Services 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   approval-center:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/approval-center-service/Dockerfile
@@ -103,6 +190,7 @@ services:
       - "8070:8070"
 
   governance:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/governance-service/Dockerfile
@@ -116,6 +204,7 @@ services:
       OPA_FAIL_MODE: deny
 
   knowledge:
+    <<: *opspilot-env
     build:
       context: ../../
       dockerfile: services/knowledge-service/Dockerfile
@@ -134,3 +223,9 @@ services:
       - "/policies"
     volumes:
       - ../../policy/rego:/policies:ro
+
+volumes:
+  pgdata:
+  promdata:
+  neo4jdata:
+

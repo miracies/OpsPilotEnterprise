@@ -157,6 +157,13 @@ def init_db() -> None:
         _seed_policy_rules(conn)
     finally:
         conn.close()
+    try:
+        from app.storage.postgres import init_postgres
+
+        init_postgres()
+    except Exception:
+        # Keep SQLite boot robust even if Postgres is unavailable.
+        pass
 
 
 def _seed_policy_rules(conn: sqlite3.Connection) -> None:

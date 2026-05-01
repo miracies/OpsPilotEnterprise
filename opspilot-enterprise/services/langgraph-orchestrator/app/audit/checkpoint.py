@@ -9,6 +9,7 @@ from typing import Any
 from opspilot_schema.resume import CheckpointRecord, PlanStep
 
 from app.storage.db import execute, query_all, query_one
+from app.storage.postgres import write_shadow_event
 
 
 def _now() -> str:
@@ -86,6 +87,7 @@ def upsert_checkpoint(
                 checkpoint.updated_at,
             ),
         )
+    write_shadow_event("op_resume_checkpoints", checkpoint.checkpoint_id, checkpoint.model_dump())
     return checkpoint
 
 

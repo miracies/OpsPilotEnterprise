@@ -29,6 +29,22 @@ export interface Incident {
   contradictions?: Array<{ type: string; summary: string; evidence_refs?: string[]; severity?: string }>;
   recommended_actions: string[];
   evidence_refs: string[];
+  source_event_refs?: string[];
+  correlation_key?: string;
+  last_seen_at?: string;
+  reopen_count?: number;
+  validation_summary?: {
+    status?: string;
+    checked_at?: string;
+    object_id?: string;
+    object_name?: string;
+    canonical_event_class?: string;
+    reason?: string;
+    inventory?: Record<string, unknown>;
+    host_detail?: Record<string, unknown>;
+    alerts?: Record<string, unknown>[];
+    host_detail_error?: string;
+  };
   analysis?: IncidentAnalysis;
   summary: string;
 }

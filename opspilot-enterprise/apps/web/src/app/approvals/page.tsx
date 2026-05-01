@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Clock, FileText, User, XCircle } from "lucide-react";
 import type { ApprovalRequest } from "@opspilot/shared-types";
 
@@ -41,6 +42,9 @@ const STATUS_LABEL: Record<string, string> = {
 const DEFAULT_DECIDER = "ops-user";
 
 export default function ApprovalsPage() {
+  const searchParams = useSearchParams();
+  const incidentIdFilter = searchParams.get("incident_id");
+  const approvalIdFilter = searchParams.get("approval_id");
   const [filter, setFilter] = useState<(typeof STATUS_TABS)[number]["key"]>("all");
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -55,9 +59,32 @@ export default function ApprovalsPage() {
     const res = await apiFetch<ApprovalsListEnvelope>(path);
     if (!res.success) throw new Error(res.error || "加载审批列表失败");
     const items = res.data?.items ?? [];
-    setApprovals(items);
-    setSelectedId((prev) => (prev && items.some((item) => item.id === prev) ? prev : items[0]?.id ?? null));
-  }, [filter]);
+    const filteredItems = incidentIdFilter ? items.filter((item) => item.incident_ref === incidentIdFilter) : items;
+    setApprovals(filteredItems);
+    setSelectedId((prev) => (prev && filteredItems.some((item) => item.id === prev) ? prev : filteredItems[0]?.id ?? null));
+  }, [filter, incidentIdFilter]);
+
+  useEffect(() => {
+    if (!approvals.length) return;
+    if (approvalIdFilter) {
+      const exact = approvals.find((item) => item.id === approvalIdFilter);
+      if (exact) {
+        setSelectedId(exact.id);
+        return;
+      }
+    }
+    if (incidentIdFilter) {
+      const pending = approvals.find((item) => item.incident_ref === incidentIdFilter && item.status === "pending");
+      if (pending) {
+        setSelectedId(pending.id);
+        return;
+      }
+      const first = approvals.find((item) => item.incident_ref === incidentIdFilter);
+      if (first) {
+        setSelectedId(first.id);
+      }
+    }
+  }, [approvalIdFilter, approvals, incidentIdFilter]);
 
   const loadDetail = useCallback(async (approvalId: string | null) => {
     if (!approvalId) {

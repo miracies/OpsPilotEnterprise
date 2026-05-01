@@ -31,16 +31,30 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020")
 EVIDENCE_AGGREGATOR_URL = os.environ.get("EVIDENCE_AGGREGATOR_URL", "http://127.0.0.1:8050")
 GOVERNANCE_SERVICE_URL = os.environ.get("GOVERNANCE_SERVICE_URL", "http://127.0.0.1:8071")
+MEMORY_SERVICE_URL = os.environ.get("MEMORY_SERVICE_URL", "http://127.0.0.1:8073")
 MONITOR_INTERVAL_SECONDS = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "60"))
 MONITOR_ENABLED_ON_START = os.environ.get("MONITOR_ENABLED_ON_START", "true").lower() == "true"
+VCENTER_INVENTORY_INTERVAL_SECONDS = int(os.environ.get("VCENTER_INVENTORY_INTERVAL_SECONDS", "180"))
+VCENTER_ALERTS_INTERVAL_SECONDS = int(os.environ.get("VCENTER_ALERTS_INTERVAL_SECONDS", "120"))
+VCENTER_EVENTS_INTERVAL_SECONDS = int(os.environ.get("VCENTER_EVENTS_INTERVAL_SECONDS", "60"))
+K8S_WORKLOAD_INTERVAL_SECONDS = int(os.environ.get("K8S_WORKLOAD_INTERVAL_SECONDS", "60"))
+VCENTER_EVENT_LOOKBACK_HOURS = int(os.environ.get("VCENTER_EVENT_LOOKBACK_HOURS", "1"))
+COLLECTOR_CONCURRENCY = int(os.environ.get("MONITOR_COLLECTOR_CONCURRENCY", "4"))
+COLLECTOR_EVENT_CACHE_SIZE = int(os.environ.get("MONITOR_EVENT_CACHE_SIZE", "200"))
 ANALYSIS_MAX_ROUNDS = int(os.environ.get("ANALYSIS_MAX_ROUNDS", "5"))
 ANALYSIS_BUDGET_SECONDS = int(os.environ.get("ANALYSIS_BUDGET_SECONDS", "60"))
 ANALYSIS_CONFIDENCE_THRESHOLD = float(os.environ.get("ANALYSIS_CONFIDENCE_THRESHOLD", "0.75"))
 
-VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://10.0.80.21:443/sdk")
-VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "administrator@vsphere.local")
-VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!")
+VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
+VCENTER_USERNAME = os.environ.get("VCENTER_USERNAME", "shaoyong.chen@vsphere.local")
+VCENTER_PASSWORD = os.environ.get("VCENTER_PASSWORD", "VMware1!VMware1!")
 VCENTER_CONN_ID = os.environ.get("VCENTER_CONNECTION_ID", "conn-vcenter-prod")
+VCENTER_POWERED_OFF_VM_INCIDENT_MODE = os.environ.get("VCENTER_POWERED_OFF_VM_INCIDENT_MODE", "expected_only").strip().lower()
+VCENTER_EXPECTED_RUNNING_VM_PATTERNS = [
+    item.strip()
+    for item in os.environ.get("VCENTER_EXPECTED_RUNNING_VM_PATTERNS", "").split(",")
+    if item.strip()
+]
 
 K8S_KUBECONFIG_PATH = os.environ.get("K8S_KUBECONFIG_PATH", r"C:\Users\mirac\.kube\config")
 K8S_CONN_ID = os.environ.get("K8S_CONNECTION_ID", "conn-k8s-prod")
@@ -56,7 +70,15 @@ MONITOR_STATE: dict[str, Any] = {
     "started_at": None,
     "last_run_at": None,
     "last_error": None,
+    "collectors": {},
+    "source_stats": {
+        "last_cycle": {},
+        "totals": {},
+    },
+    "cache": {},
 }
+
+CRITICAL_COLLECTORS = {"vcenter_inventory", "vcenter_alerts", "vcenter_key_events"}
 
 ACTION_CAPABILITY: dict[str, str] = {
     "vmware.create_snapshot": "batch",
@@ -103,6 +125,11 @@ class IngestEventBody(BaseModel):
     summary: str
     object_name: str | None = None
     rule_id: str | None = None
+    correlation_key: str | None = None
+    occurred_at: str | None = None
+    raw_message: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    validation_summary: dict[str, Any] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -158,6 +185,28 @@ class AuditWriteBody(BaseModel):
     trace_id: str | None = None
     timestamp: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CaseSimilarBody(BaseModel):
+    title: str | None = None
+    summary: str | None = None
+    category: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    root_cause_summary: str | None = None
+    knowledge_refs: list[str] = Field(default_factory=list)
+    limit: int = 5
+
+
+class CaseFromIncidentBody(BaseModel):
+    incident_id: str
+    root_cause_summary: str
+    resolution_summary: str
+    lessons_learned: list[str] = Field(default_factory=list)
+    knowledge_refs: list[str] = Field(default_factory=list)
+    category: str | None = None
+    severity: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    author: str = "ops-user"
 
 
 app = FastAPI(title="OpsPilot Event Ingestion Service")
@@ -344,6 +393,16 @@ def _init_db() -> None:
                 auto_remediation_mode TEXT NOT NULL DEFAULT 'low_risk_auto',
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS monitoring_collectors (
+                collector_name TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                cursor_json TEXT NOT NULL DEFAULT '{}',
+                stats_json TEXT NOT NULL DEFAULT '{}',
+                last_success_at TEXT,
+                last_error TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (collector_name, scope_key)
+            );
             """
         )
         conn.commit()
@@ -383,7 +442,7 @@ async def _invoke_tool(tool_name: str, input_payload: dict[str, Any], dry_run: b
 
 
 def _incident_from_row(row: sqlite3.Row) -> dict[str, Any]:
-    details = json.loads(row["details_json"] or "{}")
+    details = _normalize_incident_payload(json.loads(row["details_json"] or "{}"))
     details.setdefault("affected_objects", [])
     details.setdefault("root_cause", None)
     details.setdefault("root_cause_candidates", [])
@@ -395,6 +454,11 @@ def _incident_from_row(row: sqlite3.Row) -> dict[str, Any]:
     details.setdefault("contradictions", [])
     details.setdefault("recommended_actions", [])
     details.setdefault("evidence_refs", [])
+    details.setdefault("source_event_refs", [])
+    details.setdefault("validation_summary", {})
+    details.setdefault("correlation_key", row["dedup_key"])
+    details.setdefault("last_seen_at", row["last_updated_at"])
+    details.setdefault("reopen_count", 0)
     analysis = details.get("analysis") if isinstance(details.get("analysis"), dict) else {}
     analysis.setdefault("status", "idle")
     analysis.setdefault("round", 0)
@@ -404,9 +468,9 @@ def _incident_from_row(row: sqlite3.Row) -> dict[str, Any]:
     details["analysis"] = analysis
     return {
         "id": row["id"],
-        "title": row["title"],
+        "title": _maybe_repair_mojibake(row["title"]),
         "status": row["status"],
-        "severity": row["severity"],
+        "severity": _normalize_incident_severity(row["severity"]),
         "source": row["source"],
         "source_type": row["source_type"],
         "affected_objects": details["affected_objects"],
@@ -424,9 +488,438 @@ def _incident_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "contradictions": details["contradictions"],
         "recommended_actions": details["recommended_actions"],
         "evidence_refs": details["evidence_refs"],
+        "source_event_refs": details["source_event_refs"],
+        "validation_summary": details["validation_summary"],
+        "correlation_key": details["correlation_key"],
+        "last_seen_at": details["last_seen_at"],
+        "reopen_count": details["reopen_count"],
         "analysis": details["analysis"],
-        "summary": row["summary"],
+        "summary": _maybe_repair_mojibake(row["summary"]),
+        "details": {
+            "memory_context": details.get("memory_context"),
+            "memory_write": details.get("memory_write"),
+        },
     }
+
+
+def _incident_summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    details = json.loads(row["details_json"] or "{}")
+    details.setdefault("affected_objects", [])
+    details.setdefault("root_cause", None)
+    details.setdefault("root_cause_candidates", [])
+    details.setdefault("hypotheses", [])
+    details.setdefault("counter_evidence_result", None)
+    details.setdefault("conclusion_status", None)
+    details.setdefault("evidence_sufficiency", None)
+    details.setdefault("contradictions", [])
+    details.setdefault("recommended_actions", [])
+    details.setdefault("source_event_refs", [])
+    details.setdefault("validation_summary", {})
+    details.setdefault("correlation_key", row["dedup_key"])
+    details.setdefault("last_seen_at", row["last_updated_at"])
+    details.setdefault("reopen_count", 0)
+    analysis = details.get("analysis") if isinstance(details.get("analysis"), dict) else {}
+    summary_analysis = {
+        "status": analysis.get("status", "idle"),
+        "round": analysis.get("round", 0),
+        "max_rounds": analysis.get("max_rounds", ANALYSIS_MAX_ROUNDS),
+        "started_at": analysis.get("started_at"),
+        "updated_at": analysis.get("updated_at"),
+        "elapsed_ms": analysis.get("elapsed_ms"),
+        "final_conclusion": analysis.get("final_conclusion"),
+        "recommended_actions": analysis.get("recommended_actions", details["recommended_actions"]),
+        "next_decision": analysis.get("next_decision"),
+        "analysis_process": [],
+    }
+    return {
+        "id": row["id"],
+        "title": _maybe_repair_mojibake(row["title"]),
+        "status": row["status"],
+        "severity": _normalize_incident_severity(row["severity"]),
+        "source": row["source"],
+        "source_type": row["source_type"],
+        "affected_objects": details["affected_objects"],
+        "first_seen_at": row["first_seen_at"],
+        "last_updated_at": row["last_updated_at"],
+        "owner": row["owner"],
+        "ai_analysis_triggered": bool(row["ai_analysis_triggered"]),
+        "root_cause": details["root_cause"],
+        "root_cause_candidates": _listify(details.get("root_cause_candidates"))[:3],
+        "hypotheses": _listify(details.get("hypotheses"))[:3],
+        "winning_hypothesis": details.get("winning_hypothesis"),
+        "counter_evidence_result": details["counter_evidence_result"],
+        "conclusion_status": details["conclusion_status"],
+        "evidence_sufficiency": details["evidence_sufficiency"],
+        "contradictions": _listify(details.get("contradictions"))[:3],
+        "recommended_actions": details["recommended_actions"],
+        "evidence_refs": [],
+        "source_event_refs": _listify(details.get("source_event_refs"))[:5],
+        "validation_summary": details["validation_summary"],
+        "correlation_key": details["correlation_key"],
+        "last_seen_at": details["last_seen_at"],
+        "reopen_count": details["reopen_count"],
+        "analysis": summary_analysis,
+        "summary": _maybe_repair_mojibake(row["summary"]),
+    }
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def _safe_lower(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _vm_identity_values(vm: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("vm_id", "name"):
+        value = str(vm.get(key) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _is_vm_powered_off(vm: dict[str, Any]) -> bool:
+    return _safe_lower(vm.get("power_state")) in {"poweredoff", "powered_off", "off"}
+
+
+def _expected_running_vm_pattern(vm: dict[str, Any]) -> str | None:
+    identities = _vm_identity_values(vm)
+    for pattern in VCENTER_EXPECTED_RUNNING_VM_PATTERNS:
+        for value in identities:
+            try:
+                if re.search(pattern, value, re.IGNORECASE):
+                    return pattern
+            except re.error:
+                if pattern.lower() in value.lower():
+                    return pattern
+    return None
+
+
+def _powered_off_vm_incident_policy(vm: dict[str, Any]) -> tuple[bool, str | None]:
+    mode = VCENTER_POWERED_OFF_VM_INCIDENT_MODE
+    if mode == "all":
+        return True, _expected_running_vm_pattern(vm)
+    if mode in {"disabled", "off", "false", "none"}:
+        return False, None
+    matched_pattern = _expected_running_vm_pattern(vm)
+    return bool(matched_pattern), matched_pattern
+
+
+def _vm_powered_off_correlation_key(vm_id: str) -> str:
+    return f"{VCENTER_CONN_ID}:VirtualMachine:{vm_id}:vc-vm-powered-off"
+
+
+def _normalize_incident_severity(value: Any) -> str:
+    raw = _safe_lower(value)
+    if raw in {"critical", "high", "medium", "low", "info"}:
+        return raw
+    if raw in {"red", "fatal", "emergency"}:
+        return "high"
+    if raw in {"yellow", "warning", "warn"}:
+        return "medium"
+    if raw in {"green", "normal", "ok"}:
+        return "info"
+    return "info"
+
+
+def _maybe_repair_mojibake(text: Any) -> Any:
+    if not isinstance(text, str) or not text:
+        return text
+    markers = ("ä¸", "æ", "ç", "è", "å", "é", "鍔", "鐧", "璇", "闂", "浠", "寮", "绠")
+    if not any(marker in text for marker in markers):
+        return text
+    candidates = [text]
+    for codec in ("latin1", "cp1252"):
+        try:
+            candidates.append(text.encode(codec).decode("utf-8"))
+        except Exception:
+            continue
+
+    def _score(value: str) -> tuple[int, int]:
+        cjk = sum(1 for ch in value if "\u4e00" <= ch <= "\u9fff")
+        bad = value.count("�") + value.count("?")
+        return cjk, -bad
+
+    return max(candidates, key=_score)
+
+
+def _normalize_incident_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _normalize_incident_payload(_maybe_repair_mojibake(val)) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_normalize_incident_payload(_maybe_repair_mojibake(item)) for item in value]
+    return _maybe_repair_mojibake(value)
+
+
+def _listify(items: Any) -> list[Any]:
+    return items if isinstance(items, list) else []
+
+
+def _collector_key(collector_name: str, scope_key: str = "global") -> tuple[str, str]:
+    return collector_name, scope_key or "global"
+
+
+def _load_collector_state(collector_name: str, scope_key: str = "global") -> dict[str, Any]:
+    key = _collector_key(collector_name, scope_key)
+    row = _query_one(
+        "SELECT cursor_json, stats_json, last_success_at, last_error, updated_at FROM monitoring_collectors WHERE collector_name=? AND scope_key=?",
+        key,
+    )
+    cursor = json.loads(row["cursor_json"] or "{}") if row else {}
+    stats = json.loads(row["stats_json"] or "{}") if row else {}
+    return {
+        "collector_name": key[0],
+        "scope_key": key[1],
+        "cursor": cursor if isinstance(cursor, dict) else {},
+        "stats": stats if isinstance(stats, dict) else {},
+        "last_success_at": row["last_success_at"] if row else None,
+        "last_error": row["last_error"] if row else None,
+        "updated_at": row["updated_at"] if row else None,
+    }
+
+
+def _save_collector_state(
+    collector_name: str,
+    scope_key: str = "global",
+    *,
+    cursor: dict[str, Any] | None = None,
+    stats: dict[str, Any] | None = None,
+    last_success_at: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    current = _load_collector_state(collector_name, scope_key)
+    merged_cursor = current["cursor"]
+    if cursor is not None:
+        merged_cursor = cursor
+    merged_stats = current["stats"]
+    if stats is not None:
+        merged_stats = stats
+    _exec(
+        """
+        INSERT INTO monitoring_collectors(collector_name,scope_key,cursor_json,stats_json,last_success_at,last_error,updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(collector_name,scope_key) DO UPDATE SET
+            cursor_json=excluded.cursor_json,
+            stats_json=excluded.stats_json,
+            last_success_at=excluded.last_success_at,
+            last_error=excluded.last_error,
+            updated_at=excluded.updated_at
+        """,
+        (
+            collector_name,
+            scope_key,
+            json.dumps(merged_cursor, ensure_ascii=False),
+            json.dumps(merged_stats, ensure_ascii=False),
+            last_success_at if last_success_at is not None else current["last_success_at"],
+            last_error,
+            _now(),
+        ),
+    )
+
+
+def _update_runtime_collector_state(
+    collector_name: str,
+    *,
+    status: str,
+    interval_seconds: int,
+    scope_key: str = "global",
+    last_run_at: str | None = None,
+    last_success_at: str | None = None,
+    last_error: str | None = None,
+    lag_seconds: int | None = None,
+    cursor: dict[str, Any] | None = None,
+    stats: dict[str, Any] | None = None,
+) -> None:
+    state = MONITOR_STATE.setdefault("collectors", {})
+    state[f"{collector_name}:{scope_key}"] = {
+        "collector_name": collector_name,
+        "scope_key": scope_key,
+        "status": status,
+        "interval_seconds": interval_seconds,
+        "last_run_at": last_run_at,
+        "last_success_at": last_success_at,
+        "last_error": last_error,
+        "lag_seconds": lag_seconds,
+        "cursor": cursor or {},
+        "stats": stats or {},
+    }
+
+
+def _bump_source_stats(source_name: str, delta: dict[str, int]) -> None:
+    source_stats = MONITOR_STATE.setdefault("source_stats", {})
+    totals = source_stats.setdefault("totals", {})
+    current = totals.setdefault(source_name, {})
+    for key, value in delta.items():
+        current[key] = int(current.get(key, 0)) + int(value)
+
+
+def _set_last_cycle_stats(stats: dict[str, dict[str, int]]) -> None:
+    MONITOR_STATE.setdefault("source_stats", {})["last_cycle"] = stats
+
+
+def _refresh_monitor_last_error() -> None:
+    collectors = MONITOR_STATE.get("collectors", {})
+    blocking_errors: list[str] = []
+    degraded_errors: list[str] = []
+    for state in collectors.values():
+        if not isinstance(state, dict):
+            continue
+        last_error = str(state.get("last_error") or "").strip()
+        if not last_error:
+            continue
+        collector_name = str(state.get("collector_name") or "unknown")
+        if collector_name in CRITICAL_COLLECTORS:
+            blocking_errors.append(f"{collector_name}: {last_error}")
+        else:
+            degraded_errors.append(f"{collector_name}: {last_error}")
+    MONITOR_STATE["last_error"] = "; ".join(blocking_errors) if blocking_errors else None
+    MONITOR_STATE["last_warning"] = "; ".join(degraded_errors) if degraded_errors else None
+
+
+def _host_lookup_maps(inventory: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    hosts = _listify(inventory.get("hosts"))
+    by_id: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    for host in hosts:
+        if not isinstance(host, dict):
+            continue
+        host_id = str(host.get("host_id") or "").strip()
+        name = str(host.get("name") or "").strip()
+        if host_id:
+            by_id[host_id] = host
+        if name:
+            by_name[name.lower()] = host
+            short = name.split(".", 1)[0].lower()
+            by_name.setdefault(short, host)
+    return by_id, by_name
+
+
+def _find_host_in_inventory(inventory: dict[str, Any], object_id: str | None = None, object_name: str | None = None) -> dict[str, Any] | None:
+    by_id, by_name = _host_lookup_maps(inventory)
+    if object_id and object_id in by_id:
+        return by_id[object_id]
+    candidate_names = [object_name, object_id]
+    for value in candidate_names:
+        if not value:
+            continue
+        lowered = value.strip().lower()
+        if lowered in by_name:
+            return by_name[lowered]
+        short = lowered.split(".", 1)[0]
+        if short in by_name:
+            return by_name[short]
+    return None
+
+
+def _vm_lookup_maps(inventory: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    for vm in _listify(inventory.get("virtual_machines")):
+        if not isinstance(vm, dict):
+            continue
+        vm_id = str(vm.get("vm_id") or "").strip()
+        name = str(vm.get("name") or "").strip()
+        if vm_id:
+            by_id[vm_id] = vm
+        if name:
+            by_name[name.lower()] = vm
+            by_name.setdefault(name.split(".", 1)[0].lower(), vm)
+    return by_id, by_name
+
+
+def _find_vm_in_inventory(inventory: dict[str, Any], object_id: str | None = None, object_name: str | None = None) -> dict[str, Any] | None:
+    by_id, by_name = _vm_lookup_maps(inventory)
+    if object_id and object_id in by_id:
+        return by_id[object_id]
+    for value in (object_name, object_id):
+        if not value:
+            continue
+        lowered = value.strip().lower()
+        if lowered in by_name:
+            return by_name[lowered]
+        short = lowered.split(".", 1)[0]
+        if short in by_name:
+            return by_name[short]
+    return None
+
+
+def _event_scope_hours(cursor: dict[str, Any]) -> int:
+    last_time = _parse_timestamp(str(cursor.get("last_event_time") or ""))
+    if not last_time:
+        return max(1, VCENTER_EVENT_LOOKBACK_HOURS)
+    age_hours = (datetime.now(UTC) - last_time).total_seconds() / 3600
+    return min(24, max(1, int(age_hours) + 1))
+
+
+def _filter_incremental_events(events: list[dict[str, Any]], cursor: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    last_event_time = _parse_timestamp(str(cursor.get("last_event_time") or ""))
+    seen_event_ids = [str(item) for item in _listify(cursor.get("seen_event_ids")) if item]
+    seen_set = set(seen_event_ids)
+    fresh: list[dict[str, Any]] = []
+    newest = last_event_time
+    new_seen = list(seen_event_ids)
+    for event in sorted(events, key=lambda item: str(item.get("created_time") or "")):
+        event_id = str(event.get("event_id") or "")
+        created = _parse_timestamp(str(event.get("created_time") or ""))
+        is_new = False
+        if created is None:
+            is_new = event_id not in seen_set
+        elif last_event_time is None or created > last_event_time:
+            is_new = True
+        elif created == last_event_time and event_id and event_id not in seen_set:
+            is_new = True
+        if is_new:
+            fresh.append(event)
+            if created and (newest is None or created > newest):
+                newest = created
+            if event_id:
+                new_seen.append(event_id)
+                seen_set.add(event_id)
+    return fresh, {
+        "last_event_time": newest.isoformat() if newest else cursor.get("last_event_time"),
+        "seen_event_ids": new_seen[-COLLECTOR_EVENT_CACHE_SIZE:],
+    }
+
+
+def _event_message_category(message: str, event_type: str = "") -> tuple[str | None, str | None]:
+    text = f"{message} {event_type}".lower()
+    patterns = [
+        ("vc-host-not-responding", "critical", [r"未响应", r"not responding", r"does not respond", r"no response"]),
+        ("vc-host-sync-failed", "high", [r"无法同步主机", r"cannot synchronize host", r"sync failed", r"sync host"]),
+        ("vc-host-disconnected", "high", [r"连接断开", r"disconnected", r"not reachable", r"lost connectivity"]),
+        ("vc-datastore-critical", "high", [r"datastore", r"存储", r"\bapd\b", r"\bpdl\b", r"volume", r"storage"]),
+        ("vc-cluster-critical", "high", [r"\bha\b", r"\bdrs\b", r"cluster", r"集群", r"admission control", r"vpxd"]),
+        ("vc-network-critical", "high", [r"network", r"vmnic", r"vswitch", r"uplink", r"nic", r"网络"]),
+    ]
+    for event_class, severity, rules in patterns:
+        if any(re.search(rule, text, re.IGNORECASE) for rule in rules):
+            return event_class, severity
+    return None, None
+
+
+def _recommended_actions_for_event(event_class: str, object_name: str) -> list[str]:
+    if event_class == "vc-host-not-responding":
+        return [f"检查主机 {object_name} 的管理网络、硬件状态与 vCenter 连接状态", f"确认 {object_name} 是否仍处于 disconnected/notResponding"]
+    if event_class == "vc-host-sync-failed":
+        return [f"检查主机 {object_name} 与 vCenter 的同步状态", "复核主机管理代理、证书与网络连通性"]
+    if event_class == "vc-host-disconnected":
+        return [f"检查主机 {object_name} 的连接状态与 DNS/管理网络", "确认 vCenter 到 ESXi 的管理面连通性"]
+    if event_class == "vc-datastore-critical":
+        return ["检查相关 datastore 的可达性、容量与路径状态", "确认主机到存储的链路和多路径状态"]
+    if event_class == "vc-cluster-critical":
+        return ["检查集群 HA/DRS 状态与最近配置变更", "确认集群内主机健康与资源余量"]
+    if event_class == "vc-network-critical":
+        return ["检查主机物理网卡、vSwitch/uplink 状态", "确认管理网络与业务网络是否有链路异常"]
+    if event_class == "vc-vm-powered-off":
+        return [f"确认 {object_name} 是否应保持运行", "如确认为非计划关机，通过审批后再执行开机操作"]
+    return []
 
 
 def _get_user_auto_mode(user_id: str) -> str:
@@ -541,15 +1034,43 @@ def _create_notification_for_incident(incident: dict[str, Any]) -> None:
     )
 
 
-def _upsert_incident_from_event(evt: IngestEventBody) -> dict[str, Any]:
-    dedup_key = f"{evt.rule_id or evt.source_type}:{evt.object_id}"
+def _resolve_incident_by_correlation_key(correlation_key: str, resolution_summary: str, metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
     row = _query_one(
         "SELECT * FROM incidents WHERE dedup_key=? AND status IN ('new','analyzing','pending_action') ORDER BY last_updated_at DESC LIMIT 1",
+        (correlation_key,),
+    )
+    if not row:
+        return None
+    details = json.loads(row["details_json"] or "{}")
+    details["resolution_summary"] = resolution_summary
+    if metadata:
+        details["validation_summary"] = metadata
+    _exec(
+        "UPDATE incidents SET status='resolved', ai_analysis_triggered=0, last_updated_at=?, details_json=? WHERE id=?",
+        (_now(), json.dumps(details, ensure_ascii=False), row["id"]),
+    )
+    resolved = _query_one("SELECT * FROM incidents WHERE id=?", (row["id"],))
+    if not resolved:
+        return None
+    incident = _incident_from_row(resolved)
+    _write_audit("incident_resolved", "resolve_incident", "success", incident_ref=incident["id"], metadata={"dedup_key": correlation_key})
+    return incident
+
+
+def _upsert_incident_from_event(evt: IngestEventBody) -> dict[str, Any]:
+    dedup_key = evt.correlation_key or evt.extra.get("correlation_key") or f"{evt.rule_id or evt.source_type}:{evt.object_id}"
+    row = _query_one(
+        "SELECT * FROM incidents WHERE dedup_key=? ORDER BY last_updated_at DESC LIMIT 1",
         (dedup_key,),
     )
     if row:
         details = json.loads(row["details_json"] or "{}")
         details.setdefault("affected_objects", [])
+        details.setdefault("source_event_refs", [])
+        details.setdefault("validation_summary", {})
+        details.setdefault("reopen_count", 0)
+        details.setdefault("evidence_refs", [])
+        details.setdefault("recommended_actions", [])
         old_summary = str(row["summary"] or "")
         old_severity = str(row["severity"] or "")
         old_extra = details.get("extra", {}) if isinstance(details.get("extra"), dict) else {}
@@ -562,6 +1083,18 @@ def _upsert_incident_from_event(evt: IngestEventBody) -> dict[str, Any]:
                 }
             )
         details["extra"] = evt.extra
+        for item in evt.evidence_refs:
+            if item not in details["source_event_refs"]:
+                details["source_event_refs"].append(item)
+            if item not in details["evidence_refs"]:
+                details["evidence_refs"].append(item)
+        if evt.validation_summary:
+            details["validation_summary"] = evt.validation_summary
+        for action in _listify(evt.extra.get("recommended_actions")):
+            if action not in details["recommended_actions"]:
+                details["recommended_actions"].append(str(action))
+        details["correlation_key"] = dedup_key
+        details["last_seen_at"] = evt.occurred_at or _now()
         status_to_set = row["status"]
         changed = (
             old_summary != (evt.summary or "")
@@ -569,7 +1102,10 @@ def _upsert_incident_from_event(evt: IngestEventBody) -> dict[str, Any]:
             or json.dumps(old_extra, sort_keys=True, ensure_ascii=False)
             != json.dumps(evt.extra or {}, sort_keys=True, ensure_ascii=False)
         )
-        if str(row["status"]) == "pending_action" and changed:
+        if str(row["status"]) == "resolved":
+            status_to_set = "new"
+            details["reopen_count"] = int(details.get("reopen_count") or 0) + 1
+        elif str(row["status"]) == "pending_action" and changed:
             status_to_set = "new"
             details.setdefault("analysis", {})
             if isinstance(details["analysis"], dict):
@@ -607,6 +1143,12 @@ def _upsert_incident_from_event(evt: IngestEventBody) -> dict[str, Any]:
         "root_cause_candidates": [],
         "recommended_actions": [],
         "evidence_refs": [],
+        "source_event_refs": list(evt.evidence_refs),
+        "validation_summary": evt.validation_summary,
+        "correlation_key": dedup_key,
+        "last_seen_at": evt.occurred_at or _now(),
+        "reopen_count": 0,
+        "recommended_actions": [str(action) for action in _listify(evt.extra.get("recommended_actions"))],
         "extra": evt.extra,
     }
     _exec(
@@ -1191,15 +1733,120 @@ async def _invoke_analysis_tool(tool_name: str, payload: dict[str, Any]) -> tupl
 
 
 async def _aggregate_incident_evidence(incident_id: str) -> dict[str, Any]:
+    row = _query_one("SELECT * FROM incidents WHERE id=?", (incident_id,))
+    alert_context: dict[str, Any] = {}
+    if row:
+        details = json.loads(row["details_json"] or "{}")
+        alert_context = {
+            "alert_name": row["title"],
+            "summary": row["summary"],
+            "severity": row["severity"],
+            "source_type": row["source_type"],
+            "labels": details.get("validation_summary") or {},
+        }
     async with httpx.AsyncClient(timeout=45.0) as client:
         response = await client.post(
             f"{EVIDENCE_AGGREGATOR_URL.rstrip('/')}/api/v1/evidence/aggregate",
-            json={"incident_id": incident_id, "source_refs": []},
+            json={"incident_id": incident_id, "source_refs": [], "alert_context": alert_context},
         )
     payload = response.json()
     if not payload.get("success"):
         raise RuntimeError(payload.get("error") or "evidence aggregation failed")
     return payload.get("data", {}) or {}
+
+
+async def _load_memory_context(
+    *,
+    incident_id: str,
+    tenant_id: str,
+    query: str,
+    target_type: str,
+    target_id: str,
+) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{MEMORY_SERVICE_URL.rstrip('/')}/api/v1/memory/context",
+                json={
+                    "tenant_id": tenant_id,
+                    "query": query,
+                    "agent": "incident_detection_agent",
+                    "resource_type": target_type,
+                    "resource_id": target_id,
+                    "top_k": 5,
+                },
+            )
+        payload = response.json()
+        if not payload.get("success"):
+            return {"status": "unavailable", "error": payload.get("error") or "memory context failed"}
+        data = payload.get("data") or {}
+        _write_audit("memory_context_loaded", "analyze_incident", "success", incident_ref=incident_id, metadata={"hits": len(data.get("similar_incidents", []) or [])})
+        return {"status": "loaded", **data}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "unavailable", "error": str(exc)}
+
+
+async def _write_incident_memory(
+    *,
+    incident_id: str,
+    user_id: str,
+    status: str,
+    incident_row: sqlite3.Row,
+    details: dict[str, Any],
+    target_type: str,
+    target_id: str,
+    root_causes: list[dict[str, Any]],
+    recommendations: list[str],
+    evidence_refs: list[str],
+) -> dict[str, Any]:
+    root_cause = root_causes[0].get("description") if root_causes else ""
+    affected = details.get("affected_objects", []) if isinstance(details.get("affected_objects"), list) else []
+    target_name = ""
+    if affected and isinstance(affected[0], dict):
+        target_name = str(affected[0].get("object_name") or affected[0].get("object_id") or "")
+    content = {
+        "incident_id": incident_id,
+        "severity": incident_row["severity"],
+        "status": status,
+        "resource_type": target_type,
+        "resource_id": target_id,
+        "resource_name": target_name or target_id,
+        "symptom": incident_row["title"],
+        "evidence": [{"evidence_id": ref, "type": "evidence"} for ref in evidence_refs],
+        "root_cause": root_cause,
+        "actions": recommendations,
+        "result": status,
+        "analysis": details.get("analysis") or {},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{MEMORY_SERVICE_URL.rstrip('/')}/api/v1/memory-agent/analyze",
+                json={
+                    "request_id": f"memory-{incident_id}",
+                    "tenant_id": "default",
+                    "user_id": user_id,
+                    "session_id": incident_id,
+                    "source": "event_ingestion_service",
+                    "input_type": "incident_summary",
+                    "content": content,
+                    "auto_write": True,
+                },
+            )
+        payload = response.json()
+        if not payload.get("success"):
+            return {"status": "failed", "error": payload.get("error") or "memory write failed"}
+        data = payload.get("data") or {}
+        _write_audit(
+            "memory_written",
+            "analyze_incident",
+            "success",
+            incident_ref=incident_id,
+            metadata={"should_write": data.get("should_write_memory"), "items": len(data.get("memory_items", []) or [])},
+        )
+        return {"status": "written", **data}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": str(exc)}
 
 
 def _incident_target(details: dict[str, Any]) -> tuple[str, str]:
@@ -1481,10 +2128,6 @@ async def _maybe_auto_remediate(
     summary_l = summary.lower()
     if "pod" in summary_l and "restart" in summary_l:
         action = {"tool_name": "k8s.restart_deployment", "action_type": "write", "risk_level": "medium", "input": {"namespace": "default", "deployment_name": "unknown"}}
-    elif "powered off" in summary_l or "关机" in summary:
-        vm_name_match = re.search(r"VM\s+([A-Za-z0-9._-]+)", summary, re.I)
-        if vm_name_match:
-            action = {"tool_name": "vmware.vm_power_on", "action_type": "write", "risk_level": "medium", "input": {"vm_id": vm_name_match.group(1), "connection": _vcenter_connection_input()}}
     elif host_detail and str(host_detail.get("overall_status", "")).lower() in {"yellow", "red"}:
         # Host 非绿状态默认不自动执行高风险动作，仅建议审批
         action = {"tool_name": "vmware.host_restart", "action_type": "dangerous", "risk_level": "high", "input": {"host_id": host_detail.get("host_id"), "connection": _vcenter_connection_input()}}
@@ -1577,6 +2220,14 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
     evidence_package: dict[str, Any] = {}
     evidence_sufficiency: dict[str, Any] = _make_evidence_sufficiency({})
     contradictions: list[dict[str, Any]] = []
+    memory_context = await _load_memory_context(
+        incident_id=incident_id,
+        tenant_id="default",
+        query=f"{row['title']} {row['summary']}",
+        target_type=target_type,
+        target_id=target_id,
+    )
+    details["memory_context"] = memory_context
 
     start_dt = datetime.now(UTC)
     round_no = 0
@@ -2014,9 +2665,25 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
     details["evidence_sufficiency"] = evidence_sufficiency
     details["contradictions"] = contradictions
     details["recommended_actions"] = recommendations
+    details["alert_match"] = evidence_package.get("alert_match") or {}
+    details["alert_knowledge_ids"] = evidence_package.get("alert_knowledge_ids") or []
+    details["safe_actions"] = evidence_package.get("safe_actions") or []
+    details["approval_actions"] = evidence_package.get("approval_actions") or []
     details["analysis"] = analysis_state
 
     new_status = "resolved" if resolved else "pending_action"
+    details["memory_write"] = await _write_incident_memory(
+        incident_id=incident_id,
+        user_id=user_id,
+        status=new_status,
+        incident_row=row,
+        details=details,
+        target_type=target_type,
+        target_id=resolved_target_id or target_id,
+        root_causes=root_causes,
+        recommendations=recommendations,
+        evidence_refs=evidence_refs,
+    )
     summary = final_conclusion
     _exec(
         "UPDATE incidents SET status=?, summary=?, details_json=?, last_updated_at=?, ai_analysis_triggered=1 WHERE id=?",
@@ -2034,100 +2701,385 @@ async def _analyze_incident(incident_id: str, mode: str = "auto", user_id: str =
     return {"incident_id": incident_id, "status": new_status, "analysis": analysis_state}
 
 
-async def _monitoring_cycle() -> None:
-    vcenter_inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": _vcenter_connection_input()})
-    alerts = await _invoke_tool("vmware.query_alerts", {"connection": _vcenter_connection_input()})
+def _collector_due(collector_name: str, interval_seconds: int, scope_key: str = "global") -> bool:
+    state = _load_collector_state(collector_name, scope_key)
+    last_success = _parse_timestamp(state.get("last_success_at"))
+    if not last_success:
+        return True
+    return (datetime.now(UTC) - last_success).total_seconds() >= max(10, interval_seconds)
 
-    for host in vcenter_inventory.get("hosts", []) or []:
+
+async def _run_scheduled_collector(collector_name: str, interval_seconds: int, collector_coro) -> dict[str, Any]:
+    if interval_seconds <= 0:
+        _update_runtime_collector_state(
+            collector_name,
+            status="disabled",
+            interval_seconds=interval_seconds,
+            last_error=None,
+            cursor={},
+            stats={},
+        )
+        return {"events": [], "stats": {}, "skipped": True, "disabled": True, "data": MONITOR_STATE.get("cache", {}).get(collector_name)}
+
+    state = _load_collector_state(collector_name)
+    if not _collector_due(collector_name, interval_seconds):
+        _update_runtime_collector_state(
+            collector_name,
+            status="idle",
+            interval_seconds=interval_seconds,
+            last_run_at=state.get("updated_at"),
+            last_success_at=state.get("last_success_at"),
+            last_error=state.get("last_error"),
+            cursor=state.get("cursor"),
+            stats=state.get("stats"),
+        )
+        return {"events": [], "stats": {}, "skipped": True, "data": MONITOR_STATE.get("cache", {}).get(collector_name)}
+
+    started_at = _now()
+    _update_runtime_collector_state(collector_name, status="running", interval_seconds=interval_seconds, last_run_at=started_at)
+    try:
+        result = await collector_coro()
+        stats = result.get("stats", {})
+        cursor = result.get("cursor", {})
+        data = result.get("data")
+        MONITOR_STATE.setdefault("cache", {})[collector_name] = data
+        _save_collector_state(
+            collector_name,
+            cursor=cursor if isinstance(cursor, dict) else {},
+            stats=stats if isinstance(stats, dict) else {},
+            last_success_at=_now(),
+            last_error=None,
+        )
+        saved = _load_collector_state(collector_name)
+        lag = None
+        cursor_last_time = _parse_timestamp(str(saved["cursor"].get("last_event_time") or ""))
+        if cursor_last_time:
+            lag = max(0, int((datetime.now(UTC) - cursor_last_time).total_seconds()))
+        _update_runtime_collector_state(
+            collector_name,
+            status="healthy",
+            interval_seconds=interval_seconds,
+            last_run_at=started_at,
+            last_success_at=saved.get("last_success_at"),
+            last_error=None,
+            lag_seconds=lag,
+            cursor=saved.get("cursor"),
+            stats=saved.get("stats"),
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        _save_collector_state(
+            collector_name,
+            cursor=state.get("cursor") or {},
+            stats=state.get("stats") or {},
+            last_success_at=state.get("last_success_at"),
+            last_error=str(exc),
+        )
+        _update_runtime_collector_state(
+            collector_name,
+            status="failed",
+            interval_seconds=interval_seconds,
+            last_run_at=started_at,
+            last_success_at=state.get("last_success_at"),
+            last_error=str(exc),
+            cursor=state.get("cursor"),
+            stats=state.get("stats"),
+        )
+        raise
+
+
+def _normalize_inventory_events(inventory: dict[str, Any]) -> list[IngestEventBody]:
+    events: list[IngestEventBody] = []
+    for host in _listify(inventory.get("hosts")):
+        if not isinstance(host, dict):
+            continue
+        host_id = str(host.get("host_id") or host.get("name") or "unknown-host")
+        host_name = str(host.get("name") or host_id)
         cpu_mhz = float(host.get("cpu_mhz") or 0)
         cpu_usage_mhz = float(host.get("cpu_usage_mhz") or 0)
         mem_mb = float(host.get("memory_mb") or 0)
         mem_usage_mb = float(host.get("memory_usage_mb") or 0)
         cpu_pct = (cpu_usage_mhz / cpu_mhz * 100.0) if cpu_mhz else 0.0
         mem_pct = (mem_usage_mb / mem_mb * 100.0) if mem_mb else 0.0
+        connection_state = _safe_lower(host.get("connection_state"))
+        overall_status = _safe_lower(host.get("overall_status"))
         if cpu_pct > 85:
-            _upsert_incident_from_event(
+            events.append(
                 IngestEventBody(
                     source="vmware-monitor",
                     source_type="vmware_host_hotspot",
                     object_type="HostSystem",
-                    object_id=host.get("host_id") or host.get("name") or "unknown-host",
-                    object_name=host.get("name"),
+                    object_id=host_id,
+                    object_name=host_name,
                     severity="high",
-                    summary=f"Host {host.get('name')} CPU usage {cpu_pct:.1f}% exceeds 85%",
+                    summary=f"Host {host_name} CPU usage {cpu_pct:.1f}% exceeds 85%",
                     rule_id="vc-host-cpu-85",
-                    extra={"host_name": host.get("name"), "cpu_usage_percent": round(cpu_pct, 2)},
+                    correlation_key=f"{VCENTER_CONN_ID}:HostSystem:{host_id}:vc-host-cpu-85",
+                    evidence_refs=[f"inventory:{host_id}"],
+                    extra={"host_name": host_name, "cpu_usage_percent": round(cpu_pct, 2)},
                 )
             )
         if mem_pct > 90:
-            _upsert_incident_from_event(
+            events.append(
                 IngestEventBody(
                     source="vmware-monitor",
                     source_type="vmware_host_hotspot",
                     object_type="HostSystem",
-                    object_id=host.get("host_id") or host.get("name") or "unknown-host",
-                    object_name=host.get("name"),
+                    object_id=host_id,
+                    object_name=host_name,
                     severity="high",
-                    summary=f"Host {host.get('name')} memory usage {mem_pct:.1f}% exceeds 90%",
+                    summary=f"Host {host_name} memory usage {mem_pct:.1f}% exceeds 90%",
                     rule_id="vc-host-mem-90",
-                    extra={"host_name": host.get("name"), "memory_usage_percent": round(mem_pct, 2)},
+                    correlation_key=f"{VCENTER_CONN_ID}:HostSystem:{host_id}:vc-host-mem-90",
+                    evidence_refs=[f"inventory:{host_id}"],
+                    extra={"host_name": host_name, "memory_usage_percent": round(mem_pct, 2)},
+                )
+            )
+        if connection_state and connection_state not in {"connected", "maintenance"}:
+            event_class = "vc-host-not-responding" if connection_state in {"disconnected", "notresponding"} else "vc-host-disconnected"
+            severity = "critical" if event_class == "vc-host-not-responding" else "high"
+            events.append(
+                IngestEventBody(
+                    source="vmware-inventory",
+                    source_type="vmware_host_connection_state",
+                    object_type="HostSystem",
+                    object_id=host_id,
+                    object_name=host_name,
+                    severity=severity,
+                    summary=f"Host {host_name} connection_state = {host.get('connection_state')}",
+                    rule_id=event_class,
+                    correlation_key=f"{VCENTER_CONN_ID}:HostSystem:{host_id}:{event_class}",
+                    occurred_at=inventory.get("generated_at"),
+                    evidence_refs=[f"inventory:{host_id}"],
+                    extra={"host_name": host_name, "connection_state": host.get("connection_state"), "overall_status": host.get("overall_status"), "canonical_event_class": event_class},
+                )
+            )
+        if overall_status in {"yellow", "red"}:
+            events.append(
+                IngestEventBody(
+                    source="vmware-inventory",
+                    source_type="vmware_non_green",
+                    object_type="HostSystem",
+                    object_id=host_id,
+                    object_name=host_name,
+                    severity="high",
+                    summary=f"Host {host_name} overallStatus = {host.get('overall_status')}",
+                    rule_id="vc-overall-non-green",
+                    correlation_key=f"{VCENTER_CONN_ID}:HostSystem:{host_id}:vc-overall-non-green",
+                    occurred_at=inventory.get("generated_at"),
+                    evidence_refs=[f"inventory:{host_id}"],
+                    extra={"host_name": host_name, "overall_status": host.get("overall_status"), "canonical_event_class": "vc-overall-non-green"},
                 )
             )
 
-    for alert in alerts.get("alerts", []) or []:
-        _upsert_incident_from_event(
+    for vm in _listify(inventory.get("virtual_machines")):
+        if not isinstance(vm, dict):
+            continue
+        if not _is_vm_powered_off(vm):
+            continue
+        should_create, matched_pattern = _powered_off_vm_incident_policy(vm)
+        if not should_create:
+            continue
+        vm_id = str(vm.get("vm_id") or vm.get("name") or "unknown-vm")
+        events.append(
+            IngestEventBody(
+                source="vmware-monitor",
+                source_type="vm_guest_down",
+                object_type="VirtualMachine",
+                object_id=vm_id,
+                object_name=vm.get("name"),
+                severity="medium",
+                summary=f"Expected-running VM {vm.get('name') or vm_id} is powered off",
+                rule_id="vc-vm-powered-off",
+                correlation_key=_vm_powered_off_correlation_key(vm_id),
+                occurred_at=inventory.get("generated_at"),
+                evidence_refs=[f"inventory:{vm_id}"],
+                extra={
+                    "vm_id": vm.get("vm_id"),
+                    "name": vm.get("name"),
+                    "power_state": vm.get("power_state"),
+                    "expected_running": True,
+                    "matched_expected_pattern": matched_pattern,
+                    "powered_off_incident_mode": VCENTER_POWERED_OFF_VM_INCIDENT_MODE,
+                    "canonical_event_class": "vc-vm-powered-off",
+                },
+            )
+        )
+    return events
+
+
+def _normalize_alert_events(alerts_payload: dict[str, Any]) -> list[IngestEventBody]:
+    events: list[IngestEventBody] = []
+    for alert in _listify(alerts_payload.get("alerts")):
+        if not isinstance(alert, dict):
+            continue
+        object_id = str(alert.get("object_id") or f"obj-{uuid.uuid4().hex[:6]}")
+        object_name = str(alert.get("object_name") or object_id)
+        object_type = "HostSystem" if object_name.lower().startswith("esx") else "ManagedObject"
+        events.append(
             IngestEventBody(
                 source="vmware-alert",
                 source_type="vmware_non_green",
-                object_type="ManagedObject",
-                object_id=alert.get("object_id") or f"obj-{uuid.uuid4().hex[:6]}",
-                object_name=alert.get("object_name"),
-                severity="high",
+                object_type=object_type,
+                object_id=object_id,
+                object_name=object_name,
+                severity=str(alert.get("severity") or "high"),
                 summary=alert.get("summary") or "vCenter object non-green",
                 rule_id="vc-overall-non-green",
-                extra={"alert": alert},
+                correlation_key=f"{VCENTER_CONN_ID}:{object_type}:{object_id}:vc-overall-non-green",
+                evidence_refs=[f"alert:{object_id}"],
+                extra={"alert": alert, "canonical_event_class": "vc-overall-non-green"},
             )
         )
+    return events
 
-    for vm in vcenter_inventory.get("virtual_machines", []) or []:
-        if str(vm.get("power_state", "")).lower() in {"poweredoff", "powered_off", "off"}:
-            _upsert_incident_from_event(
-                IngestEventBody(
-                    source="vmware-monitor",
-                    source_type="vm_guest_down",
-                    object_type="VirtualMachine",
-                    object_id=vm.get("vm_id") or vm.get("name") or "unknown-vm",
-                    object_name=vm.get("name"),
-                    severity="medium",
-                    summary=f"VM {vm.get('name')} is powered off",
-                    rule_id="vc-vm-powered-off",
-                    extra={"vm_id": vm.get("vm_id"), "name": vm.get("name")},
-                )
+
+def _normalize_vcenter_scope_event(scope: dict[str, Any], event: dict[str, Any]) -> IngestEventBody | None:
+    message = str(event.get("message") or "")
+    event_type = str(event.get("event_type") or "")
+    event_class, severity = _event_message_category(message, event_type)
+    if not event_class or not severity:
+        return None
+    object_type = str(scope.get("object_type") or "ManagedObject")
+    object_id = str(scope.get("object_id") or "unknown")
+    object_name = str(scope.get("object_name") or object_id)
+    event_id = str(event.get("event_id") or "")
+    summary = message or f"{object_name} reported {event_class}"
+    return IngestEventBody(
+        source="vmware-event",
+        source_type="vmware_key_event",
+        object_type=object_type,
+        object_id=object_id,
+        object_name=object_name,
+        severity=severity,
+        summary=summary,
+        rule_id=event_class,
+        correlation_key=f"{VCENTER_CONN_ID}:{object_type}:{object_id}:{event_class}",
+        occurred_at=event.get("created_time"),
+        raw_message=message,
+        evidence_refs=[f"event:{event_id}"] if event_id else [],
+        extra={
+            "canonical_event_class": event_class,
+            "scope_type": scope.get("scope_type"),
+            "scope_name": object_name,
+            "event_type": event_type,
+            "event_id": event_id,
+            "event_level": event.get("level"),
+        },
+    )
+
+
+async def _collect_vcenter_inventory() -> dict[str, Any]:
+    inventory = await _invoke_tool("vmware.get_vcenter_inventory", {"connection": _vcenter_connection_input()})
+    events = _normalize_inventory_events(inventory)
+    return {
+        "data": inventory,
+        "events": events,
+        "cursor": {"generated_at": inventory.get("generated_at")},
+        "stats": {
+            "raw_objects": len(_listify(inventory.get("hosts"))) + len(_listify(inventory.get("virtual_machines"))),
+            "normalized_events": len(events),
+        },
+    }
+
+
+async def _collect_vcenter_alerts() -> dict[str, Any]:
+    alerts = await _invoke_tool("vmware.query_alerts", {"connection": _vcenter_connection_input()})
+    events = _normalize_alert_events(alerts)
+    return {
+        "data": alerts,
+        "events": events,
+        "cursor": {"last_fetched_at": _now()},
+        "stats": {
+            "raw_alerts": len(_listify(alerts.get("alerts"))),
+            "normalized_events": len(events),
+        },
+    }
+
+
+async def _collect_vcenter_key_events(inventory: dict[str, Any]) -> dict[str, Any]:
+    scopes: list[dict[str, Any]] = []
+    for host in _listify(inventory.get("hosts")):
+        if isinstance(host, dict) and host.get("host_id"):
+            scopes.append({"scope_type": "host", "object_type": "HostSystem", "object_id": host["host_id"], "object_name": host.get("name") or host["host_id"]})
+    for cluster in _listify(inventory.get("clusters")):
+        if isinstance(cluster, dict) and cluster.get("cluster_id"):
+            scopes.append({"scope_type": "cluster", "object_type": "ClusterComputeResource", "object_id": cluster["cluster_id"], "object_name": cluster.get("name") or cluster["cluster_id"]})
+
+    semaphore = asyncio.Semaphore(max(1, COLLECTOR_CONCURRENCY))
+    stats = {"scopes": len(scopes), "raw_events": 0, "normalized_events": 0}
+    normalized_events: list[IngestEventBody] = []
+    latest_event_time: str | None = None
+
+    async def _fetch_scope(scope: dict[str, Any]) -> list[IngestEventBody]:
+        nonlocal latest_event_time
+        collector_name = "vcenter_key_events_scope"
+        scope_key = str(scope["object_id"])
+        state = _load_collector_state(collector_name, scope_key)
+        hours = _event_scope_hours(state.get("cursor", {}))
+        async with semaphore:
+            payload = await _invoke_tool(
+                "vmware.query_events",
+                {"connection": _vcenter_connection_input(), "object_id": scope_key, "hours": hours},
             )
+        raw_events = _listify(payload.get("events"))
+        stats["raw_events"] += len(raw_events)
+        fresh_events, new_cursor = _filter_incremental_events(raw_events, state.get("cursor", {}))
+        _save_collector_state(
+            collector_name,
+            scope_key,
+            cursor=new_cursor,
+            stats={"raw_events": len(raw_events), "fresh_events": len(fresh_events)},
+            last_success_at=_now(),
+            last_error=None,
+        )
+        if new_cursor.get("last_event_time"):
+            latest_event_time = max(str(latest_event_time or ""), str(new_cursor["last_event_time"])) if latest_event_time else str(new_cursor["last_event_time"])
+        return [evt for evt in (_normalize_vcenter_scope_event(scope, event) for event in fresh_events) if evt]
 
+    scope_results = await asyncio.gather(*[_fetch_scope(scope) for scope in scopes], return_exceptions=True)
+    for item in scope_results:
+        if isinstance(item, Exception):
+            continue
+        normalized_events.extend(item)
+    stats["normalized_events"] = len(normalized_events)
+    return {
+        "data": {"scope_count": len(scopes)},
+        "events": normalized_events,
+        "cursor": {"tracked_scopes": len(scopes), "last_event_time": latest_event_time},
+        "stats": stats,
+    }
+
+
+async def _collect_k8s_workload_events() -> dict[str, Any]:
     workload = await _invoke_tool("k8s.get_workload_status", {"connection": _k8s_connection_input()})
-    for node in workload.get("nodes", []) or []:
-        if not node.get("ready", True):
-            _upsert_incident_from_event(
+    events: list[IngestEventBody] = []
+    for node in _listify(workload.get("nodes")):
+        if isinstance(node, dict) and not node.get("ready", True):
+            node_name = node.get("node_name", "unknown-node")
+            events.append(
                 IngestEventBody(
                     source="k8s-monitor",
                     source_type="k8s_node_notready",
                     object_type="Node",
-                    object_id=node.get("node_name", "unknown-node"),
-                    object_name=node.get("node_name", "unknown-node"),
+                    object_id=node_name,
+                    object_name=node_name,
                     severity="high",
-                    summary=f"Node {node.get('node_name')} is NotReady",
+                    summary=f"Node {node_name} is NotReady",
                     rule_id="k8s-node-not-ready",
+                    correlation_key=f"{K8S_CONN_ID}:Node:{node_name}:k8s-node-not-ready",
+                    evidence_refs=[f"k8s-node:{node_name}"],
                     extra={"node": node},
                 )
             )
-
-    for pod in workload.get("pods", []) or []:
+    for pod in _listify(workload.get("pods")):
+        if not isinstance(pod, dict):
+            continue
         restarts = int(pod.get("restart_count") or 0)
         if restarts > 3:
             pod_name = pod.get("pod_name", "unknown-pod")
             dep_name = pod_name.rsplit("-", 2)[0] if "-" in pod_name else pod_name
-            _upsert_incident_from_event(
+            events.append(
                 IngestEventBody(
                     source="k8s-monitor",
                     source_type="k8s_pod_restarts",
@@ -2137,33 +3089,242 @@ async def _monitoring_cycle() -> None:
                     severity="medium",
                     summary=f"Pod {pod_name} restarted {restarts} times",
                     rule_id="k8s-pod-restarts-10m",
+                    correlation_key=f"{K8S_CONN_ID}:Pod:{pod.get('namespace', 'default')}/{pod_name}:k8s-pod-restarts-10m",
+                    evidence_refs=[f"k8s-pod:{pod.get('namespace', 'default')}/{pod_name}"],
                     extra={"namespace": pod.get("namespace", "default"), "deployment_name": dep_name, "restart_count": restarts},
                 )
             )
-
-    for dep in workload.get("deployments", []) or []:
+    for dep in _listify(workload.get("deployments")):
+        if not isinstance(dep, dict):
+            continue
         desired = int(dep.get("replicas_desired") or 0)
         available = int(dep.get("replicas_available") or 0)
         if desired > available:
-            _upsert_incident_from_event(
+            name = dep.get("name", "unknown")
+            namespace = dep.get("namespace", "default")
+            events.append(
                 IngestEventBody(
                     source="k8s-monitor",
                     source_type="k8s_deployment_unavailable",
                     object_type="Deployment",
-                    object_id=f"{dep.get('namespace', 'default')}/{dep.get('name', 'unknown')}",
-                    object_name=dep.get("name", "unknown"),
+                    object_id=f"{namespace}/{name}",
+                    object_name=name,
                     severity="high",
-                    summary=f"Deployment {dep.get('name')} available replicas {available}/{desired}",
+                    summary=f"Deployment {name} available replicas {available}/{desired}",
                     rule_id="k8s-deployment-unavailable",
-                    extra={"namespace": dep.get("namespace", "default"), "deployment_name": dep.get("name"), "replicas_desired": desired},
+                    correlation_key=f"{K8S_CONN_ID}:Deployment:{namespace}/{name}:k8s-deployment-unavailable",
+                    evidence_refs=[f"k8s-deployment:{namespace}/{name}"],
+                    extra={"namespace": namespace, "deployment_name": name, "replicas_desired": desired},
                 )
             )
+    return {
+        "data": workload,
+        "events": events,
+        "cursor": {"last_fetched_at": _now()},
+        "stats": {"normalized_events": len(events)},
+    }
+
+
+async def _validate_event(evt: IngestEventBody, inventory: dict[str, Any], alerts: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    canonical_class = str(evt.extra.get("canonical_event_class") or evt.rule_id or evt.source_type)
+    summary: dict[str, Any] = {
+        "status": "unverified",
+        "checked_at": _now(),
+        "object_id": evt.object_id,
+        "object_name": evt.object_name,
+        "canonical_event_class": canonical_class,
+    }
+    if evt.object_type == "HostSystem":
+        host = _find_host_in_inventory(inventory, evt.object_id, evt.object_name)
+        if host:
+            summary["inventory"] = {
+                "connection_state": host.get("connection_state"),
+                "overall_status": host.get("overall_status"),
+                "cpu_usage_percent": round((float(host.get("cpu_usage_mhz") or 0) / float(host.get("cpu_mhz") or 1)) * 100.0, 2) if float(host.get("cpu_mhz") or 0) else 0.0,
+                "memory_usage_percent": round((float(host.get("memory_usage_mb") or 0) / float(host.get("memory_mb") or 1)) * 100.0, 2) if float(host.get("memory_mb") or 0) else 0.0,
+            }
+        try:
+            detail = await _invoke_tool("vmware.get_host_detail", {"connection": _vcenter_connection_input(), "host_id": evt.object_id})
+            summary["host_detail"] = {
+                "connection_state": detail.get("connection_state"),
+                "overall_status": detail.get("overall_status"),
+                "cpu_usage_percent": detail.get("cpu_usage_percent"),
+                "memory_usage_percent": detail.get("memory_usage_percent"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            summary["host_detail_error"] = str(exc)
+
+        state_connection = _safe_lower((summary.get("host_detail") or {}).get("connection_state") or (summary.get("inventory") or {}).get("connection_state"))
+        state_overall = _safe_lower((summary.get("host_detail") or {}).get("overall_status") or (summary.get("inventory") or {}).get("overall_status"))
+        is_active = True
+        if canonical_class in {"vc-host-not-responding", "vc-host-sync-failed", "vc-host-disconnected"}:
+            is_active = state_connection not in {"", "connected", "maintenance"} or state_overall in {"yellow", "red"}
+        elif canonical_class == "vc-overall-non-green":
+            is_active = state_overall in {"yellow", "red"}
+        elif canonical_class == "vc-host-cpu-85":
+            pct = float((summary.get("host_detail") or {}).get("cpu_usage_percent") or (summary.get("inventory") or {}).get("cpu_usage_percent") or 0.0)
+            is_active = pct > 85.0
+        elif canonical_class == "vc-host-mem-90":
+            pct = float((summary.get("host_detail") or {}).get("memory_usage_percent") or (summary.get("inventory") or {}).get("memory_usage_percent") or 0.0)
+            is_active = pct > 90.0
+        summary["status"] = "active" if is_active else "recovered"
+        summary["reason"] = "validated against host detail/inventory"
+        return is_active, summary
+
+    if evt.object_type in {"VirtualMachine", "vm"} and canonical_class == "vc-vm-powered-off":
+        vm = _find_vm_in_inventory(inventory, evt.object_id, evt.object_name)
+        if vm:
+            should_create, matched_pattern = _powered_off_vm_incident_policy(vm)
+            summary["inventory"] = {
+                "vm_id": vm.get("vm_id"),
+                "name": vm.get("name"),
+                "power_state": vm.get("power_state"),
+                "expected_running": should_create,
+                "matched_expected_pattern": matched_pattern,
+                "powered_off_incident_mode": VCENTER_POWERED_OFF_VM_INCIDENT_MODE,
+            }
+            is_active = _is_vm_powered_off(vm) and should_create
+        else:
+            summary["inventory"] = {"found": False}
+            is_active = False
+        summary["status"] = "active" if is_active else "recovered"
+        summary["reason"] = "validated against VM power state and expected-running policy"
+        return is_active, summary
+
+    if canonical_class == "vc-overall-non-green":
+        matching = [
+            alert for alert in _listify(alerts.get("alerts"))
+            if isinstance(alert, dict) and str(alert.get("object_id") or "") == evt.object_id
+        ]
+        summary["alerts"] = matching
+        is_active = len(matching) > 0
+        summary["status"] = "active" if is_active else "recovered"
+        summary["reason"] = "validated against current vCenter alerts"
+        return is_active, summary
+
+    summary["status"] = "active"
+    summary["reason"] = "default collector validation"
+    return True, summary
+
+
+async def _project_events(events: list[IngestEventBody], inventory: dict[str, Any], alerts: dict[str, Any]) -> dict[str, int]:
+    stats = {"created_or_updated": 0, "resolved": 0, "filtered": 0}
+    for evt in events:
+        requires_validation = evt.source.startswith("vmware")
+        if requires_validation:
+            is_active, validation_summary = await _validate_event(evt, inventory, alerts)
+            evt.validation_summary = validation_summary
+            evt.extra["validation_summary"] = validation_summary
+            if not is_active:
+                stats["filtered"] += 1
+                if evt.correlation_key:
+                    if _resolve_incident_by_correlation_key(evt.correlation_key, "Validated state recovered", validation_summary):
+                        stats["resolved"] += 1
+                continue
+        if evt.rule_id and not evt.extra.get("recommended_actions"):
+            evt.extra["recommended_actions"] = _recommended_actions_for_event(str(evt.rule_id), str(evt.object_name or evt.object_id))
+        _upsert_incident_from_event(evt)
+        stats["created_or_updated"] += 1
+    return stats
+
+
+def _resolve_suppressed_vm_powered_off_incidents(inventory: dict[str, Any]) -> int:
+    rows = _query_all(
+        """
+        SELECT * FROM incidents
+        WHERE status IN ('new','analyzing','pending_action')
+          AND dedup_key LIKE ?
+        """,
+        (f"{VCENTER_CONN_ID}:VirtualMachine:%:vc-vm-powered-off",),
+    )
+    resolved = 0
+    for row in rows:
+        details = json.loads(row["details_json"] or "{}")
+        affected = next(
+            (item for item in _listify(details.get("affected_objects")) if isinstance(item, dict)),
+            {},
+        )
+        object_id = str(affected.get("object_id") or row["dedup_key"].split(":VirtualMachine:", 1)[-1].rsplit(":vc-vm-powered-off", 1)[0])
+        object_name = str(affected.get("object_name") or "")
+        vm = _find_vm_in_inventory(inventory, object_id, object_name)
+        metadata: dict[str, Any] = {
+            "status": "recovered",
+            "checked_at": _now(),
+            "object_id": object_id,
+            "object_name": object_name or object_id,
+            "canonical_event_class": "vc-vm-powered-off",
+            "powered_off_incident_mode": VCENTER_POWERED_OFF_VM_INCIDENT_MODE,
+        }
+        if vm:
+            should_create, matched_pattern = _powered_off_vm_incident_policy(vm)
+            metadata["inventory"] = {
+                "vm_id": vm.get("vm_id"),
+                "name": vm.get("name"),
+                "power_state": vm.get("power_state"),
+                "expected_running": should_create,
+                "matched_expected_pattern": matched_pattern,
+            }
+            if _is_vm_powered_off(vm) and should_create:
+                continue
+            if _is_vm_powered_off(vm):
+                reason = "普通 VM 关机不是故障，已按 expected-running 判断标准抑制"
+            else:
+                reason = "VM 当前不是 poweredOff，历史关机 incident 已自动恢复"
+        else:
+            metadata["inventory"] = {"found": False}
+            reason = "VM 当前不在 inventory 中，历史关机 incident 已自动恢复"
+        metadata["reason"] = reason
+        if _resolve_incident_by_correlation_key(str(row["dedup_key"]), reason, metadata):
+            resolved += 1
+    return resolved
+
+
+async def _monitoring_cycle() -> None:
+    inventory_result = await _run_scheduled_collector("vcenter_inventory", VCENTER_INVENTORY_INTERVAL_SECONDS, _collect_vcenter_inventory)
+    inventory = inventory_result.get("data") or MONITOR_STATE.get("cache", {}).get("vcenter_inventory") or {}
+    alerts_result = await _run_scheduled_collector("vcenter_alerts", VCENTER_ALERTS_INTERVAL_SECONDS, _collect_vcenter_alerts)
+    alerts = alerts_result.get("data") or MONITOR_STATE.get("cache", {}).get("vcenter_alerts") or {"alerts": []}
+
+    async def _event_collector_wrapper():
+        return await _collect_vcenter_key_events(inventory)
+
+    collector_results = await asyncio.gather(
+        _run_scheduled_collector("vcenter_key_events", VCENTER_EVENTS_INTERVAL_SECONDS, _event_collector_wrapper),
+        _run_scheduled_collector("k8s_workload", K8S_WORKLOAD_INTERVAL_SECONDS, _collect_k8s_workload_events),
+        return_exceptions=True,
+    )
+
+    vcenter_event_result = collector_results[0] if not isinstance(collector_results[0], Exception) else {"events": [], "stats": {"errors": 1}}
+    k8s_result = collector_results[1] if not isinstance(collector_results[1], Exception) else {"events": [], "stats": {"errors": 1}}
+
+    all_events: list[IngestEventBody] = []
+    for result in (inventory_result, alerts_result, vcenter_event_result, k8s_result):
+        all_events.extend(result.get("events", []))
+
+    projection_stats = await _project_events(all_events, inventory if isinstance(inventory, dict) else {}, alerts if isinstance(alerts, dict) else {"alerts": []})
+    vm_power_state_stats = {
+        "resolved": _resolve_suppressed_vm_powered_off_incidents(inventory if isinstance(inventory, dict) else {}),
+    }
+    cycle_stats = {
+        "vcenter_inventory": inventory_result.get("stats", {}),
+        "vcenter_alerts": alerts_result.get("stats", {}),
+        "vcenter_key_events": vcenter_event_result.get("stats", {}),
+        "k8s_workload": k8s_result.get("stats", {}),
+        "projector": projection_stats,
+        "vcenter_vm_power_state": vm_power_state_stats,
+    }
+    _set_last_cycle_stats(cycle_stats)
+    for source_name, stats in cycle_stats.items():
+        if isinstance(stats, dict):
+            _bump_source_stats(source_name, {key: int(value) for key, value in stats.items() if isinstance(value, (int, float))})
+    _refresh_monitor_last_error()
 
 
 async def _monitor_loop() -> None:
     MONITOR_STATE["running"] = True
     MONITOR_STATE["started_at"] = _now()
     MONITOR_STATE["last_error"] = None
+    MONITOR_STATE["last_warning"] = None
     try:
         while MONITOR_STATE["running"]:
             try:
@@ -2221,6 +3382,7 @@ async def health() -> dict:
             "monitor_running": bool(MONITOR_STATE["running"]),
             "monitor_last_run_at": MONITOR_STATE["last_run_at"],
             "monitor_last_error": MONITOR_STATE["last_error"],
+            "monitor_last_warning": MONITOR_STATE.get("last_warning"),
             "mock_fallback": {
                 "vmware_use_mock_fallback": VMWARE_USE_MOCK_FALLBACK,
                 "k8s_use_mock_fallback": K8S_USE_MOCK_FALLBACK,
@@ -2235,6 +3397,7 @@ async def health() -> dict:
 
 @app.get("/api/v1/monitoring/status")
 async def monitoring_status() -> dict:
+    collectors = sorted(MONITOR_STATE.get("collectors", {}).values(), key=lambda item: (item.get("collector_name", ""), item.get("scope_key", "")))
     return make_success(
         {
             "running": bool(MONITOR_STATE["running"]),
@@ -2242,6 +3405,9 @@ async def monitoring_status() -> dict:
             "started_at": MONITOR_STATE["started_at"],
             "last_run_at": MONITOR_STATE["last_run_at"],
             "last_error": MONITOR_STATE["last_error"],
+            "last_warning": MONITOR_STATE.get("last_warning"),
+            "collectors": collectors,
+            "source_stats": MONITOR_STATE.get("source_stats", {}),
             "sources": {
                 "vcenter_connection_id": VCENTER_CONN_ID,
                 "vcenter_endpoint": VCENTER_ENDPOINT,
@@ -2274,10 +3440,12 @@ async def ingest_event(body: IngestEventBody) -> dict:
 
 
 @app.get("/api/v1/incidents")
-async def list_incidents() -> dict:
+async def list_incidents(view: str = "summary", limit: int = 50) -> dict:
     try:
-        rows = _query_all("SELECT * FROM incidents ORDER BY last_updated_at DESC LIMIT 200")
-        return make_success({"incidents": [_incident_from_row(r) for r in rows]})
+        safe_limit = min(max(int(limit or 50), 1), 200)
+        rows = _query_all("SELECT * FROM incidents ORDER BY last_updated_at DESC LIMIT ?", (safe_limit,))
+        projector = _incident_from_row if view == "detail" else _incident_summary_from_row
+        return make_success({"incidents": [projector(r) for r in rows], "view": "detail" if view == "detail" else "summary", "limit": safe_limit})
     except Exception as exc:  # noqa: BLE001
         return make_error(str(exc))
 
@@ -2815,6 +3983,144 @@ async def list_cases(category: str | None = None, status: str | None = None) -> 
                 }
             )
         return make_success({"items": items, "total": len(items)})
+    except Exception as exc:  # noqa: BLE001
+        return make_error(str(exc))
+
+
+def _case_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "summary": row["summary"],
+        "category": row["category"],
+        "status": row["status"],
+        "severity": row["severity"],
+        "tags": json.loads(row["tags_json"] or "[]"),
+        "incident_refs": json.loads(row["incident_refs_json"] or "[]"),
+        "root_cause_summary": row["root_cause_summary"],
+        "resolution_summary": row["resolution_summary"],
+        "lessons_learned": row["lessons_learned"],
+        "author": row["author"],
+        "created_at": row["created_at"],
+        "archived_at": row["archived_at"],
+        "similarity_score": row["similarity_score"],
+        "hit_count": row["hit_count"],
+        "knowledge_refs": json.loads(row["knowledge_refs_json"] or "[]"),
+    }
+
+
+def _case_terms(text: str) -> set[str]:
+    return {term for term in re.split(r"[^a-zA-Z0-9_.-]+", text.lower()) if len(term) >= 2}
+
+
+def _score_case_similarity(case: dict[str, Any], body: CaseSimilarBody) -> tuple[float, list[str]]:
+    query_text = " ".join(
+        [
+            body.title or "",
+            body.summary or "",
+            body.category or "",
+            body.root_cause_summary or "",
+            " ".join(body.tags),
+            " ".join(body.knowledge_refs),
+        ]
+    )
+    query_terms = _case_terms(query_text)
+    if not query_terms:
+        return 0.0, []
+    matched_fields: list[str] = []
+    overlap = 0
+    fields = {
+        "title": str(case.get("title") or ""),
+        "summary": str(case.get("summary") or ""),
+        "category": str(case.get("category") or ""),
+        "root_cause_summary": str(case.get("root_cause_summary") or ""),
+        "tags": " ".join(str(x) for x in case.get("tags") or []),
+        "knowledge_refs": " ".join(str(x) for x in case.get("knowledge_refs") or []),
+    }
+    for field, text in fields.items():
+        hits = query_terms & _case_terms(text)
+        if hits:
+            matched_fields.append(field)
+            overlap += len(hits)
+    score = overlap / max(len(query_terms), 1)
+    if body.category and body.category == case.get("category"):
+        score += 0.18
+        matched_fields.append("category")
+    if set(body.knowledge_refs or []) & set(case.get("knowledge_refs") or []):
+        score += 0.25
+        matched_fields.append("knowledge_refs")
+    if set(body.tags or []) & set(case.get("tags") or []):
+        score += 0.12
+        matched_fields.append("tags")
+    return round(min(score, 0.99), 3), list(dict.fromkeys(matched_fields))
+
+
+@app.post("/api/v1/cases/similar")
+async def similar_cases(body: CaseSimilarBody) -> dict:
+    try:
+        rows = _query_all("SELECT * FROM cases WHERE status='archived' ORDER BY archived_at DESC, created_at DESC LIMIT 500")
+        scored: list[dict[str, Any]] = []
+        for row in rows:
+            item = _case_row_to_dict(row)
+            score, matched_fields = _score_case_similarity(item, body)
+            if score <= 0:
+                continue
+            item["similarity_score"] = score
+            item["matched_fields"] = matched_fields
+            scored.append(item)
+        scored.sort(key=lambda item: (item.get("similarity_score") or 0.0, item.get("hit_count") or 0), reverse=True)
+        limit = max(1, min(int(body.limit or 5), 20))
+        for item in scored[:limit]:
+            _exec("UPDATE cases SET hit_count=hit_count+1 WHERE id=?", (item["id"],))
+        return make_success({"items": scored[:limit], "total": len(scored[:limit])})
+    except Exception as exc:  # noqa: BLE001
+        return make_error(str(exc))
+
+
+@app.post("/api/v1/cases/from-incident")
+async def case_from_incident(body: CaseFromIncidentBody) -> dict:
+    try:
+        row = _query_one("SELECT * FROM incidents WHERE id=?", (body.incident_id,))
+        incident = _incident_from_row(row) if row else {
+            "id": body.incident_id,
+            "title": body.incident_id,
+            "summary": body.root_cause_summary,
+            "severity": body.severity or "medium",
+            "source": "manual",
+            "details": {},
+        }
+        details = incident.get("details") if isinstance(incident.get("details"), dict) else {}
+        case_id = f"CASE-{datetime.now(UTC).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        tags = list(dict.fromkeys([*body.tags, "manual-review", str(incident.get("source") or "incident")]))
+        evidence_summary = details.get("evidence_summary") or details.get("summary") or incident.get("summary")
+        now = _now()
+        _exec(
+            """
+            INSERT INTO cases(id,title,summary,category,status,severity,tags_json,incident_refs_json,root_cause_summary,resolution_summary,lessons_learned,author,created_at,archived_at,similarity_score,hit_count,knowledge_refs_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                case_id,
+                str(incident.get("title") or body.incident_id),
+                str(evidence_summary or incident.get("summary") or body.root_cause_summary),
+                body.category or str(details.get("category") or "incident_review"),
+                "archived",
+                body.severity or str(incident.get("severity") or "medium"),
+                json.dumps(tags, ensure_ascii=False),
+                json.dumps([body.incident_id], ensure_ascii=False),
+                body.root_cause_summary,
+                body.resolution_summary,
+                "\n".join(body.lessons_learned),
+                body.author,
+                now,
+                now,
+                0.0,
+                0,
+                json.dumps(body.knowledge_refs, ensure_ascii=False),
+            ),
+        )
+        row = _query_one("SELECT * FROM cases WHERE id=?", (case_id,))
+        return make_success(_case_row_to_dict(row) if row else {"id": case_id})
     except Exception as exc:  # noqa: BLE001
         return make_error(str(exc))
 

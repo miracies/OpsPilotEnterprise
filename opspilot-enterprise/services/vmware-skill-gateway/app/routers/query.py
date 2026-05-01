@@ -37,6 +37,11 @@ class QueryEventsBody(BaseModel):
 class QueryMetricsBody(BaseModel):
     object_id: str
     metric: str = Field(..., description="Metric key, e.g. cpu.usage.average")
+    object_type: str | None = None
+    metrics: list[str] | None = None
+    range_minutes: int = Field(0, ge=0, le=10080)
+    step_seconds: int = Field(300, ge=20, le=3600)
+    source: str = "vcenter"
     connection: dict | None = None
 
 
@@ -78,7 +83,15 @@ async def query_events(body: QueryEventsBody) -> dict:
 
 @router.post("/query_metrics")
 async def query_metrics(body: QueryMetricsBody) -> dict:
-    data = await VCenterService(body.connection).query_metrics(body.object_id, body.metric)
+    data = await VCenterService(body.connection).query_metrics(
+        body.object_id,
+        body.metric,
+        object_type=body.object_type,
+        metrics=body.metrics,
+        range_minutes=body.range_minutes,
+        step_seconds=body.step_seconds,
+        source=body.source,
+    )
     return make_success(data)
 
 

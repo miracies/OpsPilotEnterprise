@@ -26,3 +26,15 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime logs and generated deployment artifacts
+*.log
+logs/
+tmp-runtime-logs/
+opspilot-enterprise/*.log
+opspilot-enterprise/logs/
+opspilot-enterprise/tmp-runtime-logs/
+opspilot-enterprise/tmp/**/*.log
+opspilot-enterprise/tmp/deploy-remote/opspilot-enterprise-deploy.tgz
+opspilot-enterprise/tmp/**/*.tgz
+opspilot-enterprise/tmp/*.tgz
