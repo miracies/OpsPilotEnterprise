@@ -127,6 +127,14 @@ pip install -e services/governance-service --no-deps
 pip install -e services/knowledge-service --no-deps
 ```
 
+如需在 Windows 本地直接运行 OPA CLI，可按需下载到 `tools/opa.exe`：
+
+```powershell
+.\scripts\install-opa.ps1
+```
+
+Docker Compose 部署会使用 `openpolicyagent/opa` 镜像，不依赖本地 `tools/opa.exe`。
+
 ### 3. 启动后端服务
 
 Windows PowerShell：

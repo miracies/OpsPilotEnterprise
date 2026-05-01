@@ -31,12 +31,14 @@ Thumbs.db
 *.log
 logs/
 tmp-runtime-logs/
-logs/
-tmp-runtime-logs/
 tmp/**/*.log
 tmp/deploy-remote/opspilot-enterprise-deploy.tgz
 tmp/**/*.tgz
 tmp/*.tgz
+
+# Downloaded local tool binaries
+tools/opa.exe
+
 .next/
 dist/
 build/
