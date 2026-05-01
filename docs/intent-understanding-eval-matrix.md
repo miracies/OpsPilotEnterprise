@@ -14,7 +14,7 @@
 
 ## 样本结构
 
-完整数据集位于 [intent_understanding_cases.json](/E:/work/git/OpsPilot/opspilot-enterprise/tests/data/intent_understanding_cases.json)。
+完整数据集位于 [intent_understanding_cases.json](/E:/work/git/OpsPilot/tests/data/intent_understanding_cases.json)。
 
 每条样本统一包含以下字段：
 

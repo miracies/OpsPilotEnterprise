@@ -205,7 +205,7 @@ docker compose up --build
 ## 项目结构
 
 ```text
-opspilot-enterprise/
+OpsPilot/
 |-- apps/
 |   |-- web/                       # Next.js 前端
 |   `-- api-bff/                   # /api/v1 聚合层

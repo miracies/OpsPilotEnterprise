@@ -1,12 +1,12 @@
-﻿# OpsPilot 涓€閿繙绔儴缃?
+# OpsPilot 涓€閿繙绔儴缃?
 閫傜敤鍦烘櫙锛?- 鏈満鏄?Windows
 - 鐩爣鏈烘槸 Linux
 - 閫氳繃 SSH 鍏嶅瘑鐧诲綍
 - 闇€瑕佽嚜鍔ㄩ厤缃?Docker 鍥藉唴婧愬拰 pip 鍥藉唴婧?
 ## 鑴氭湰浣嶇疆
 
-- 鏈湴涓€閿儴缃诧細`E:\work\git\OpsPilot\opspilot-enterprise\scripts\deploy-remote.ps1`
-- 杩滅 bootstrap锛歚E:\work\git\OpsPilot\opspilot-enterprise\deploy\scripts\bootstrap-remote.sh`
+- 鏈湴涓€閿儴缃诧細`E:\work\git\OpsPilot\scripts\deploy-remote.ps1`
+- 杩滅 bootstrap锛歚E:\work\git\OpsPilot\deploy\scripts\bootstrap-remote.sh`
 
 ## 榛樿琛屼负
 
@@ -26,7 +26,7 @@
 ## 鍩烘湰鐢ㄦ硶
 
 ```powershell
-cd E:\work\git\OpsPilot\opspilot-enterprise
+cd E:\work\git\OpsPilot
 .\scripts\deploy-remote.ps1 -RemoteHost 192.168.51.169
 ```
 

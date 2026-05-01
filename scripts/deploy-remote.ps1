@@ -38,7 +38,6 @@ function Invoke-Checked {
 }
 
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$workspaceRoot = Resolve-Path (Join-Path $projectRoot "..")
 $bootstrapScript = Join-Path $projectRoot "deploy\scripts\bootstrap-remote.sh"
 $tmpDir = Join-Path $projectRoot "tmp\deploy-remote"
 $archiveName = "$ProjectDirName-deploy.tgz"
@@ -65,22 +64,22 @@ if (-not (Test-Path $envPath)) {
 }
 
 $excludeArgs = @(
-    "--exclude=$ProjectDirName/.git",
-    "--exclude=$ProjectDirName/node_modules",
-    "--exclude=$ProjectDirName/apps/web/.next",
-    "--exclude=$ProjectDirName/apps/web/node_modules",
-    "--exclude=$ProjectDirName/tmp",
-    "--exclude=$ProjectDirName/tmp-*",
-    "--exclude=$ProjectDirName/logs",
-    "--exclude=$ProjectDirName/**/__pycache__",
-    "--exclude=$ProjectDirName/**/*.pyc"
+    "--exclude=.git",
+    "--exclude=node_modules",
+    "--exclude=apps/web/.next",
+    "--exclude=apps/web/node_modules",
+    "--exclude=tmp",
+    "--exclude=tmp-*",
+    "--exclude=logs",
+    "--exclude=**/__pycache__",
+    "--exclude=**/*.pyc"
 ) -join " "
 
 if (Test-Path $archivePath) {
     Remove-Item $archivePath -Force
 }
 
-Invoke-Checked -WorkingDirectory $workspaceRoot -Command "tar -czf `"$archivePath`" $excludeArgs $ProjectDirName"
+Invoke-Checked -Command "tar -czf `"$archivePath`" $excludeArgs -C `"$projectRoot`" ."
 Invoke-Checked -Command "$sshBase `"mkdir -p $RemoteBaseDir /tmp`""
 
 if (-not $SkipBootstrap) {
@@ -103,7 +102,8 @@ $remotePrepare = @"
 set -euo pipefail
 mkdir -p '$RemoteBaseDir'
 rm -rf '$remoteProjectDir'
-tar -xzf '$remoteArchivePath' -C '$RemoteBaseDir'
+mkdir -p '$remoteProjectDir'
+tar -xzf '$remoteArchivePath' -C '$remoteProjectDir'
 python3 - <<'PY'
 from pathlib import Path
 root = Path('$remoteProjectDir')

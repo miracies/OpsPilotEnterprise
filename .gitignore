@@ -1,4 +1,4 @@
-# Python virtual environments
+﻿# Python virtual environments
 myenv/
 venv/
 .venv/
@@ -31,10 +31,16 @@ Thumbs.db
 *.log
 logs/
 tmp-runtime-logs/
-opspilot-enterprise/*.log
-opspilot-enterprise/logs/
-opspilot-enterprise/tmp-runtime-logs/
-opspilot-enterprise/tmp/**/*.log
-opspilot-enterprise/tmp/deploy-remote/opspilot-enterprise-deploy.tgz
-opspilot-enterprise/tmp/**/*.tgz
-opspilot-enterprise/tmp/*.tgz
+logs/
+tmp-runtime-logs/
+tmp/**/*.log
+tmp/deploy-remote/opspilot-enterprise-deploy.tgz
+tmp/**/*.tgz
+tmp/*.tgz
+.next/
+dist/
+build/
+*.db
+*.sqlite3
+coverage/
+.turbo/

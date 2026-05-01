@@ -9,9 +9,9 @@
 
 ## 执行方式
 
-- API 实测脚本：[eval_intent_understanding.py](/E:/work/git/OpsPilot/opspilot-enterprise/scripts/eval_intent_understanding.py)
-- 页面实测脚本：[eval_intent_understanding_page.js](/E:/work/git/OpsPilot/opspilot-enterprise/scripts/eval_intent_understanding_page.js)
-- 用例数据集：[intent_understanding_cases.json](/E:/work/git/OpsPilot/opspilot-enterprise/tests/data/intent_understanding_cases.json)
+- API 实测脚本：[eval_intent_understanding.py](/E:/work/git/OpsPilot/scripts/eval_intent_understanding.py)
+- 页面实测脚本：[eval_intent_understanding_page.js](/E:/work/git/OpsPilot/scripts/eval_intent_understanding_page.js)
+- 用例数据集：[intent_understanding_cases.json](/E:/work/git/OpsPilot/tests/data/intent_understanding_cases.json)
 
 ## 当前基线结论
 
