@@ -71,6 +71,16 @@ function LifecycleBadge({ status }: { status: string }) {
 
 type TabId = "overview" | "registry" | "gateways" | "invocations";
 type DetailSection = "info" | "manifest" | "capabilities" | "connections" | "stats" | "health";
+type ToolStats = {
+  total_tools?: number;
+  enabled?: number;
+  high_risk_tools?: number;
+  gateways_healthy?: number;
+  gateways_total?: number;
+  invocation_success_rate?: number;
+  domains?: Record<string, number>;
+  [key: string]: unknown;
+};
 
 // ── Main Component ─────────────────────────────────────────
 
@@ -79,7 +89,7 @@ export default function ToolGatewayPage() {
   const [tools, setTools] = useState<ToolMeta[]>([]);
   const [gateways, setGateways] = useState<GatewayInfo[]>([]);
   const [invocations, setInvocations] = useState<ToolInvocation[]>([]);
-  const [stats, setStats] = useState<Record<string, any>>({});
+  const [stats, setStats] = useState<ToolStats>({});
   const [selectedTool, setSelectedTool] = useState<ToolMeta | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterDomain, setFilterDomain] = useState("");
@@ -109,7 +119,7 @@ export default function ToolGatewayPage() {
       apiFetch<{ data: ToolMeta[] }>("/api/v1/tools").then(r => setTools(r.data ?? [])),
       apiFetch<{ data: GatewayInfo[] }>("/api/v1/tools/gateways").then(r => setGateways(r.data ?? [])),
       apiFetch<{ data: ToolInvocation[] }>("/api/v1/tools/invocations").then(r => setInvocations(r.data ?? [])),
-      apiFetch<{ data: Record<string, any> }>("/api/v1/tools/stats").then(r => setStats(r.data ?? {})),
+      apiFetch<{ data: ToolStats }>("/api/v1/tools/stats").then(r => setStats(r.data ?? {})),
     ]).finally(() => setLoading(false));
   }, []);
 
@@ -637,6 +647,7 @@ export default function ToolGatewayPage() {
                       ) : (
                         <div className="text-center py-8">
                           <HeartPulse className="h-8 w-8 text-slate-200 mx-auto mb-2" />
+                          {/* eslint-disable-next-line react/no-unescaped-entities */}
                           <p className="text-xs text-slate-400">点击"检查"执行校验与健康检查</p>
                         </div>
                       )}
@@ -877,7 +888,7 @@ function FormField({ label, hint, children }: { label: string; hint?: string; ch
 // ── Overview Tab ────────────────────────────────────────────
 
 function OverviewTab({ stats, gateways, invocations, setTab }: {
-  stats: Record<string, any>; gateways: GatewayInfo[]; invocations: ToolInvocation[]; setTab: (t: TabId) => void;
+  stats: ToolStats; gateways: GatewayInfo[]; invocations: ToolInvocation[]; setTab: (t: TabId) => void;
 }) {
   return (
     <div className="space-y-5">

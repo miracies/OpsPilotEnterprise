@@ -12,6 +12,7 @@ CAPABILITY_TOOLS = [
     "get_host_detail",
     "get_cluster_detail",
     "query_events",
+    "collect_vm_diagnosis_bundle",
     "query_metrics",
     "query_alerts",
     "query_topology",

@@ -643,6 +643,8 @@ def _evidence_source_type(evidence_name: str) -> str:
         return value
     if any(token in value for token in ("cpu", "memory", "usage", "latency", "balloon", "swap", "packet_loss", "free_space")):
         return "metric"
+    if any(token in value for token in ("alarm", "alert")):
+        return "alert"
     if any(token in value for token in ("event", "task", "backup", "maintenance", "vmotion")):
         return "event"
     if any(token in value for token in ("log", "hostd", "vpxa")):

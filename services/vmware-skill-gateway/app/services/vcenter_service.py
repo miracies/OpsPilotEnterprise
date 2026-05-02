@@ -294,6 +294,40 @@ def _normalize_perf_value(metric: str, value: Any) -> float:
     return raw
 
 
+def _dt(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return value.astimezone(UTC).isoformat()
+    except Exception:
+        return str(value)
+
+
+def _fault_message(issue: Any) -> str:
+    for attr in ("fullFormattedMessage", "localizedMessage", "msg"):
+        value = getattr(issue, attr, None)
+        if value:
+            return str(value)
+    fault = getattr(issue, "fault", None)
+    return str(getattr(fault, "msg", "") or fault or issue)
+
+
+def _snapshot_tree(nodes: list[Any], depth: int = 0) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for node in nodes or []:
+        out.append(
+            {
+                "name": str(getattr(node, "name", "") or ""),
+                "description": str(getattr(node, "description", "") or ""),
+                "created_time": _dt(getattr(node, "createTime", None)),
+                "state": str(getattr(node, "state", "") or ""),
+                "depth": depth,
+            }
+        )
+        out.extend(_snapshot_tree(list(getattr(node, "childSnapshotList", []) or []), depth + 1))
+    return out
+
+
 class VCenterService:
     def __init__(self, connection: dict[str, Any] | None = None):
         self._connection_input = connection
@@ -380,8 +414,11 @@ class VCenterService:
             if _moid(vm) == vm_id:
                 detail = _vm_summary(vm)
                 runtime = vm.summary.runtime
+                detail["connection_state"] = str(getattr(runtime, "connectionState", "") or "")
+                detail["guest_heartbeat_status"] = str(getattr(getattr(vm.summary, "guest", None), "guestHeartbeatStatus", "") or "")
                 detail["host_name"] = runtime.host.name if getattr(runtime, "host", None) else None
                 datastores = list(getattr(vm, "datastore", []) or [])
+                detail["datastore_ids"] = [_moid(ds) for ds in datastores]
                 datastore_names = [ds.name for ds in datastores if getattr(ds, "name", None)]
                 detail["datastore_name"] = datastore_names[0] if datastore_names else None
                 detail["datastore_names"] = datastore_names
@@ -394,6 +431,133 @@ class VCenterService:
                 detail["snapshot_count"] = len(getattr(getattr(vm, "snapshot", None), "rootSnapshotList", []) or [])
                 return detail
         return None
+
+    async def collect_vm_diagnosis_bundle(self, vm_id: str, hours: int = 4) -> dict[str, Any] | None:
+        def _impl():
+            return self._with_client(lambda content, _: self._collect_vm_diagnosis_bundle_sync(content, vm_id, hours))
+        try:
+            return await self._run(_impl)
+        except Exception:
+            if os.environ.get("VMWARE_USE_MOCK_FALLBACK", "false").lower() == "true":
+                return mock_data.get_vm_diagnosis_bundle(vm_id, hours)
+            raise
+
+    def _collect_vm_diagnosis_bundle_sync(self, content: Any, vm_id: str, hours: int) -> dict[str, Any] | None:
+        vm = self._find_vm_by_id(content, vm_id)
+        if vm is None:
+            return None
+        detail = self._find_vm_detail(content, vm_id) or {}
+        runtime = vm.summary.runtime
+        guest = vm.summary.guest
+        datastores = list(getattr(vm, "datastore", []) or [])
+        networks = list(getattr(vm, "network", []) or [])
+        events = self._query_events_sync(content, vm_id, hours)
+        host = getattr(runtime, "host", None)
+        host_status = _host_summary(host) if host is not None else None
+        datastore_status = [_datastore_summary(ds) for ds in datastores]
+        triggered_alarms: list[dict[str, Any]] = []
+        for state in list(getattr(vm, "triggeredAlarmState", []) or []):
+            alarm = getattr(state, "alarm", None)
+            alarm_info = getattr(alarm, "info", None)
+            triggered_alarms.append(
+                {
+                    "key": str(getattr(state, "key", "") or ""),
+                    "alarm_name": str(getattr(alarm_info, "name", "") or _moid(alarm) or ""),
+                    "alarm_id": _moid(alarm) if alarm is not None else None,
+                    "entity_id": _moid(getattr(state, "entity", None)) or vm_id,
+                    "entity_name": getattr(getattr(state, "entity", None), "name", detail.get("name")),
+                    "status": str(getattr(state, "overallStatus", "") or ""),
+                    "time": _dt(getattr(state, "time", None)),
+                    "acknowledged": bool(getattr(state, "acknowledged", False)),
+                    "acknowledged_by": getattr(state, "acknowledgedByUser", None),
+                    "acknowledged_time": _dt(getattr(state, "acknowledgedTime", None)),
+                    "event_key": getattr(state, "eventKey", None),
+                    "disabled": bool(getattr(state, "disabled", False)),
+                }
+            )
+        config_issues: list[dict[str, Any]] = []
+        for issue in list(getattr(vm, "configIssue", []) or []):
+            fault = getattr(issue, "fault", None)
+            config_issues.append(
+                {
+                    "key": str(getattr(issue, "key", "") or ""),
+                    "message": _fault_message(issue),
+                    "fault_type": fault.__class__.__name__ if fault is not None else issue.__class__.__name__,
+                    "created_time": _dt(getattr(issue, "createdTime", None)),
+                }
+            )
+        snapshot = getattr(vm, "snapshot", None)
+        root_snapshots = list(getattr(snapshot, "rootSnapshotList", []) or [])
+        task_events = [
+            item
+            for item in events
+            if "task" in str(item.get("event_type") or item.get("type") or item.get("message") or "").lower()
+        ]
+        same_host_unhealthy: list[dict[str, Any]] = []
+        if host is not None:
+            for peer in list(getattr(host, "vm", []) or []):
+                if _moid(peer) != vm_id and _overall_status(peer) not in {"green", "gray"}:
+                    same_host_unhealthy.append({"vm_id": _moid(peer), "name": peer.summary.config.name, "overall_status": _overall_status(peer)})
+        same_datastore_unhealthy: list[dict[str, Any]] = []
+        for ds in datastores:
+            for peer in list(getattr(ds, "vm", []) or []):
+                if _moid(peer) != vm_id and _overall_status(peer) not in {"green", "gray"}:
+                    same_datastore_unhealthy.append({"vm_id": _moid(peer), "name": peer.summary.config.name, "overall_status": _overall_status(peer), "datastore_id": _moid(ds)})
+        return {
+            "vm_id": vm_id,
+            "hours": hours,
+            "basic_status": {
+                "vm_id": vm_id,
+                "name": detail.get("name"),
+                "uuid": getattr(getattr(vm, "config", None), "uuid", None),
+                "instance_uuid": getattr(getattr(vm, "config", None), "instanceUuid", None),
+                "power_state": str(getattr(runtime, "powerState", "") or ""),
+                "connection_state": str(getattr(runtime, "connectionState", "") or ""),
+                "overall_status": _overall_status(vm),
+                "guest_heartbeat_status": str(getattr(guest, "guestHeartbeatStatus", "") or ""),
+                "tools_status": detail.get("tools_status"),
+                "host_id": detail.get("host_id"),
+                "host_name": detail.get("host_name"),
+                "datastore_ids": detail.get("datastore_ids", []),
+                "datastore_names": detail.get("datastore_names", []),
+                "network_names": [getattr(net, "name", "") for net in networks if getattr(net, "name", None)],
+            },
+            "triggered_alarms": triggered_alarms,
+            "config_issues": config_issues,
+            "recent_events": events,
+            "recent_tasks": task_events,
+            "snapshot_status": {
+                "snapshot_count": len(root_snapshots),
+                "consolidation_needed": bool(getattr(runtime, "consolidationNeeded", False)),
+                "snapshots": _snapshot_tree(root_snapshots),
+            },
+            "dependency_status": {
+                "host": host_status,
+                "datastores": datastore_status,
+                "networks": [
+                    {
+                        "id": _moid(net),
+                        "name": getattr(net, "name", ""),
+                        "overall_status": _overall_status(net),
+                    }
+                    for net in networks
+                ],
+            },
+            "performance_metrics": {
+                "vm.cpu_usage_percent": self._latest_metric_series(vm, "vm", "cpu_usage_percent"),
+                "vm.memory_usage_percent": self._latest_metric_series(vm, "vm", "memory_usage_percent"),
+                "host.cpu_usage_percent": self._latest_metric_series(host, "host", "cpu_usage_percent") if host is not None else [],
+                "host.memory_usage_percent": self._latest_metric_series(host, "host", "memory_usage_percent") if host is not None else [],
+                "datastore.free_percent": [
+                    {"datastore_id": _moid(ds), "series": self._latest_metric_series(ds, "datastore", "datastore_free_percent")}
+                    for ds in datastores
+                ],
+            },
+            "blast_radius": {
+                "same_host_unhealthy_vms": same_host_unhealthy,
+                "same_datastore_unhealthy_vms": same_datastore_unhealthy,
+            },
+        }
 
     async def get_host_detail(self, host_id: str) -> dict[str, Any] | None:
         def _impl():

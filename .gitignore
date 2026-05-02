@@ -29,8 +29,9 @@ Thumbs.db
 
 # Runtime logs and generated deployment artifacts
 *.log
-logs/
+/logs/
 tmp-runtime-logs/
+tmp/
 tmp/**/*.log
 tmp/deploy-remote/opspilot-enterprise-deploy.tgz
 tmp/**/*.tgz

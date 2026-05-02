@@ -70,7 +70,6 @@ $excludeArgs = @(
     "--exclude=apps/web/node_modules",
     "--exclude=tmp",
     "--exclude=tmp-*",
-    "--exclude=logs",
     "--exclude=**/__pycache__",
     "--exclude=**/*.pyc"
 ) -join " "
@@ -160,10 +159,12 @@ PY
 }
 
 if (-not $SkipBuild) {
-    $remoteDeploy = @"
+$remoteDeploy = @"
 set -euo pipefail
 cd '$remoteProjectDir/deploy/docker'
 docker compose up -d --build
+bash '$remoteProjectDir/deploy/scripts/configure-opensearch-anonymous.sh'
+docker compose up -d opensearch-dashboards
 docker compose ps
 "@
     Invoke-Checked -Command "$sshBase `"$remoteDeploy`""

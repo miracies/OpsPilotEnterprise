@@ -41,6 +41,22 @@ def test_query_events():
     assert data["success"] is True
 
 
+def test_collect_vm_diagnosis_bundle():
+    resp = client.post("/api/v1/query/collect_vm_diagnosis_bundle", json={"vm_id": "vm-005", "hours": 4})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    bundle = data["data"]
+    assert bundle["basic_status"]["overall_status"] == "red"
+    assert bundle["triggered_alarms"]
+    assert bundle["config_issues"]
+    assert bundle["snapshot_status"]["consolidation_needed"] is True
+
+    resp = client.post("/api/v1/invoke/vmware.collect_vm_diagnosis_bundle", json={"input": {"vm_id": "vm-005"}})
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+
+
 def test_invoke_inventory():
     resp = client.post("/api/v1/invoke/vmware.get_vcenter_inventory", json={"input": {}})
     assert resp.status_code == 200

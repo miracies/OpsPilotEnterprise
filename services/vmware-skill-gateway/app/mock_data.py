@@ -316,6 +316,98 @@ def get_metric_series(object_id: str, metric: str) -> list[dict]:
     return points
 
 
+def get_vm_diagnosis_bundle(vm_id: str, hours: int = 4) -> dict | None:
+    detail = get_vm_detail(vm_id)
+    if not detail:
+        return None
+    host = HOST_BY_ID.get(detail.get("host_id"), {})
+    datastore = DS_BY_ID.get(detail.get("datastore_id"), {})
+    status = "red" if vm_id == "vm-005" else detail.get("overall_status", "green")
+    triggered_alarms = [
+        {
+            "key": f"alarm-{vm_id}-overall-red",
+            "alarm_name": "VM overallStatus red",
+            "entity_id": vm_id,
+            "entity_name": detail.get("name"),
+            "status": status,
+            "time": _iso(NOW - timedelta(minutes=18)),
+            "acknowledged": False,
+            "acknowledged_by": None,
+            "acknowledged_time": None,
+        }
+    ] if status == "red" else []
+    config_issues = [
+        {
+            "key": f"issue-{vm_id}-snapshot-chain",
+            "message": "Virtual machine disk consolidation is needed after backup snapshot removal.",
+            "fault_type": "SnapshotConsolidationNeeded",
+            "created_time": _iso(NOW - timedelta(minutes=35)),
+        }
+    ] if vm_id == "vm-005" else []
+    events = get_events_for_object(vm_id, hours)
+    return {
+        "vm_id": vm_id,
+        "hours": hours,
+        "basic_status": {
+            "vm_id": vm_id,
+            "name": detail.get("name"),
+            "power_state": detail.get("power_state"),
+            "connection_state": detail.get("connection_state", "connected"),
+            "overall_status": status,
+            "guest_heartbeat_status": detail.get("guest_heartbeat_status", "green"),
+            "tools_status": detail.get("tools_status"),
+            "host_id": detail.get("host_id"),
+            "host_name": detail.get("host_name"),
+            "datastore_ids": [detail.get("datastore_id")] if detail.get("datastore_id") else [],
+            "datastore_names": detail.get("datastore_names", []),
+        },
+        "triggered_alarms": triggered_alarms,
+        "config_issues": config_issues,
+        "recent_events": events,
+        "recent_tasks": [event for event in events if "Task" in str(event.get("type", "")) or "task" in str(event.get("message", "")).lower()],
+        "snapshot_status": {
+            "snapshot_count": detail.get("snapshot_count", 0),
+            "consolidation_needed": vm_id == "vm-005",
+            "snapshots": [
+                {
+                    "name": "backup-prep",
+                    "created_time": _iso(NOW - timedelta(hours=6)),
+                    "state": "poweredOn",
+                    "depth": 0,
+                }
+            ] if vm_id == "vm-005" else [],
+        },
+        "dependency_status": {
+            "host": {
+                "host_id": host.get("host_id"),
+                "name": host.get("name"),
+                "overall_status": host.get("overall_status", "green"),
+                "connection_state": host.get("connection_state"),
+                "power_state": host.get("power_state"),
+            },
+            "datastores": [
+                {
+                    "id": datastore.get("id"),
+                    "name": datastore.get("name"),
+                    "overall_status": datastore.get("overall_status", "green"),
+                    "free_gb": datastore.get("free_gb"),
+                    "capacity_gb": datastore.get("capacity_gb"),
+                }
+            ] if datastore else [],
+            "networks": [],
+        },
+        "performance_metrics": {
+            "vm.cpu_usage_percent": get_metric_series(vm_id, "cpu_usage_percent")[-1:],
+            "vm.memory_usage_percent": get_metric_series(vm_id, "memory_usage_percent")[-1:],
+            "datastore.free_percent": [{"timestamp": _iso(NOW), "value": round(float(datastore.get("free_gb", 0)) * 100 / float(datastore.get("capacity_gb", 1)), 2)}] if datastore else [],
+        },
+        "blast_radius": {
+            "same_host_unhealthy_vms": [],
+            "same_datastore_unhealthy_vms": [vm_id] if vm_id == "vm-005" else [],
+        },
+    }
+
+
 ALERTS = [
     {
         "alert_id": "al-1001",

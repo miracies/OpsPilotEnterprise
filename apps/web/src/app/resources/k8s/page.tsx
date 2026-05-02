@@ -47,7 +47,10 @@ export default function K8sResourcesPage() {
     if (selectedId) fetchData(selectedId, namespace || undefined);
   }, [selectedId, namespace]);
 
-  const namespaces = useMemo(() => (workloads?.namespaces ?? []).map((item: any) => item.name).filter(Boolean), [workloads]);
+  const namespaces = useMemo(
+    () => (workloads?.namespaces ?? []).map((item) => String(item.name ?? "")).filter(Boolean),
+    [workloads],
+  );
 
   if (loading) {
     return <div className="flex h-64 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-blue-600" /></div>;
@@ -101,36 +104,45 @@ export default function K8sResourcesPage() {
             <TableCard
               title="节点"
               columns={["名称", "Ready", "Kubelet", "OS"]}
-              rows={(workloads.nodes ?? []).map((node: any) => [
-                node.node_name,
-                <Badge key={`${node.node_name}-ready`} variant={node.ready ? "success" : "danger"}>{node.ready ? "Ready" : "NotReady"}</Badge>,
-                node.kubelet_version,
-                node.os_image,
-              ])}
+              rows={(workloads.nodes ?? []).map((node) => {
+                const nodeName = String(node.node_name ?? "");
+                const ready = Boolean(node.ready);
+                return [
+                  nodeName,
+                  <Badge key={`${nodeName}-ready`} variant={ready ? "success" : "danger"}>{ready ? "Ready" : "NotReady"}</Badge>,
+                  String(node.kubelet_version ?? ""),
+                  String(node.os_image ?? ""),
+                ];
+              })}
             />
             <TableCard
               title="Deployment"
               columns={["命名空间", "名称", "副本", "状态"]}
-              rows={(workloads.deployments ?? []).map((dep: any) => [
-                dep.namespace,
-                dep.name,
-                `${dep.replicas_available ?? 0}/${dep.replicas_desired ?? 0}`,
-                <Badge key={`${dep.namespace}-${dep.name}`} variant={dep.ready ? "success" : "warning"}>{dep.ready ? "Healthy" : "Degraded"}</Badge>,
-              ])}
+              rows={(workloads.deployments ?? []).map((dep) => {
+                const namespaceName = String(dep.namespace ?? "");
+                const deploymentName = String(dep.name ?? "");
+                const ready = Boolean(dep.ready);
+                return [
+                  namespaceName,
+                  deploymentName,
+                  `${Number(dep.replicas_available ?? 0)}/${Number(dep.replicas_desired ?? 0)}`,
+                  <Badge key={`${namespaceName}-${deploymentName}`} variant={ready ? "success" : "warning"}>{ready ? "Healthy" : "Degraded"}</Badge>,
+                ];
+              })}
             />
           </div>
 
           <TableCard
             title="Pod"
             columns={["命名空间", "名称", "Phase", "Node", "Ready", "重启次数"]}
-            rows={(workloads.pods ?? []).slice(0, 50).map((pod: any) => [
+            rows={(workloads.pods ?? []).slice(0, 50).map((pod) => [
               pod.namespace,
               pod.pod_name,
               pod.phase,
               pod.node_name || "—",
               <Badge key={`${pod.namespace}-${pod.pod_name}-ready`} variant={pod.ready ? "success" : "warning"}>{pod.ready ? "Ready" : "NotReady"}</Badge>,
               String(pod.restart_count ?? 0),
-            ])}
+            ]) as ReactNode[][]}
           />
         </>
       ) : (

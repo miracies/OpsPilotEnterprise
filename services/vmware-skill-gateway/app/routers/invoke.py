@@ -113,6 +113,14 @@ async def invoke(tool_name: str, body: InvokeBody) -> dict:
                     connection=body.input.get("connection"),
                 )
             )
+        if tool_name == "vmware.collect_vm_diagnosis_bundle":
+            return await query.collect_vm_diagnosis_bundle(
+                query.VmDiagnosisBundleBody(
+                    vm_id=str(_required("vm_id")),
+                    hours=body.input.get("hours", 4),
+                    connection=body.input.get("connection"),
+                )
+            )
         if tool_name == "vmware.query_metrics":
             return await query.query_metrics(
                 query.QueryMetricsBody(

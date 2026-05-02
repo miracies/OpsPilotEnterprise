@@ -92,7 +92,7 @@ class AlertKnowledgeAutomation(BaseModel):
 
 
 class AlertKnowledgeSource(BaseModel):
-    type: Literal["manual", "rule", "kb", "case", "external", "seed"] = "manual"
+    type: Literal["manual", "rule", "kb", "case", "external", "seed", "attachment"] = "manual"
     title: str
     url: str | None = None
     trust_score: float = Field(default=0.8, ge=0.0, le=1.0)

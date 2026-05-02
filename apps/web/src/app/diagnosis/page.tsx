@@ -6,6 +6,7 @@ import {
   FileText, BookOpen, Archive, Wrench,
   CheckCircle2, Clock, Radio, AlertCircle,
   Download, Play, Bot, ShieldCheck, Loader2, MessageSquare,
+  ExternalLink,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -24,7 +25,14 @@ interface DiagnosisData {
   assistant_message: string;
   root_cause_candidates: Array<{ description: string; confidence: number; category?: string }>;
   evidence_refs: string[];
-  evidences: Array<{ evidence_id: string; source_type: string; summary: string; confidence: number; timestamp: string }>;
+  evidences: Array<{
+    evidence_id: string;
+    source_type: string;
+    summary: string;
+    confidence: number;
+    timestamp: string;
+    external_links?: Array<{ provider: string; title: string; url: string }>;
+  }>;
   recommended_actions: string[];
   tool_traces: Array<{ tool_name: string; gateway: string; input_summary: string; output_summary: string; duration_ms: number; status: string; timestamp: string }>;
   created_at?: string;
@@ -817,6 +825,15 @@ export default function DiagnosisPage() {
                     </div>
                   </div>
                   <p className="text-xs text-slate-700 leading-relaxed">{e.summary}</p>
+                  {(e.external_links ?? []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(e.external_links ?? []).map((link) => (
+                        <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="inline-flex h-6 items-center gap-1 rounded border border-slate-200 px-1.5 text-[10px] text-blue-700 hover:bg-blue-50">
+                          <ExternalLink className="h-3 w-3" /> {link.title || link.provider}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </CardContent>

@@ -8,6 +8,7 @@ _TOOLS: list[dict] = [
     ToolMeta(name="vmware.get_host_detail", display_name="Get host detail", category="compute", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=30, idempotent=True, version="1.0.0", tags=["host", "detail"]).model_dump(),
     ToolMeta(name="vmware.get_cluster_detail", display_name="Get cluster detail", category="compute", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=30, idempotent=True, version="1.0.0", tags=["cluster", "detail"]).model_dump(),
     ToolMeta(name="vmware.query_events", display_name="Query events", category="observability", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["event"]).model_dump(),
+    ToolMeta(name="vmware.collect_vm_diagnosis_bundle", display_name="Collect VM diagnosis bundle", category="observability", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=90, idempotent=True, version="1.0.0", tags=["vm", "diagnosis", "alarm", "config", "event"]).model_dump(),
     ToolMeta(name="vmware.query_metrics", display_name="Query metrics", category="observability", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["metric"]).model_dump(),
     ToolMeta(name="vmware.query_alerts", display_name="Query alerts", category="observability", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["alert"]).model_dump(),
     ToolMeta(name="vmware.query_topology", display_name="Query topology", category="inventory", domain="vmware", provider="vmware", action_type="read", risk_level="low", approval_required=False, timeout_seconds=60, idempotent=True, version="1.0.0", tags=["topology"]).model_dump(),
@@ -241,6 +242,15 @@ _INPUT_SCHEMAS: dict[str, dict] = {
             "connection": {"type": "object"},
         },
         "required": ["object_id", "metric"],
+    },
+    "vmware.collect_vm_diagnosis_bundle": {
+        "type": "object",
+        "properties": {
+            "vm_id": {"type": "string"},
+            "hours": {"type": "integer"},
+            "connection": {"type": "object"},
+        },
+        "required": ["vm_id"],
     },
     "vmware.kb_search": {
         "type": "object",

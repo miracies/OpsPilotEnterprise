@@ -126,6 +126,42 @@ def test_alert_match_returns_missing_evidence_and_actions():
     assert data["approval_actions"]
 
 
+def test_vm_overall_status_red_fixture_matches_and_tracks_granular_missing_evidence():
+    resp = client.get("/knowledge/alert-items/AK-VMWARE-VM-OVERALL-STATUS-RED")
+    assert resp.status_code == 200
+    item = resp.json()["data"]
+    assert item["source"]["type"] == "attachment"
+    assert "vm.triggered_alarms" in item["evidence_required"]
+    assert "vmware.vm_guest_restart" in item["automation"]["approval_actions"]
+    assert all("restart" not in action.lower() for action in item["automation"]["safe_actions"])
+
+    resp = client.post(
+        "/knowledge/import/validate",
+        json={"content": __import__("json").dumps(item), "content_type": "jsonl", "source_type": "attachment"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["valid"] is True
+
+    resp = client.post(
+        "/knowledge/alert-match",
+        json={
+            "alert_name": "VM overallStatus red",
+            "summary": "vCenter reports virtual machine red status with triggered alarm and config issue suspected",
+            "vendor": "vmware",
+            "category": "vm_level",
+            "evidence_present": ["vm.basic_status"],
+            "top_k": 1,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["matches"][0]["item"]["id"] == "AK-VMWARE-VM-OVERALL-STATUS-RED"
+    assert "vm.triggered_alarms" in data["matches"][0]["missing_critical_evidence"]
+    assert "alert" in data["missing_evidence"]
+    assert "vmware.collect_vm_diagnosis_bundle" in data["safe_actions"]
+    assert "vmware.vm.storage_vmotion" in data["approval_actions"]
+
+
 def test_bulk_import_dry_run_import_jobs_deprecate_feedback_and_prometheus_rule_converter():
     item = _sample_alert("AK-TEST-BULK")
     resp = client.post("/knowledge/import/validate", json={"content": __import__("json").dumps(item), "content_type": "json"})

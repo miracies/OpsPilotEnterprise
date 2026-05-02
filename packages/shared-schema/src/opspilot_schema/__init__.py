@@ -6,6 +6,22 @@ from .evidence import (
     EvidenceError,
     EvidencePackage,
     EvidenceSourceStats,
+    ExternalLink,
+)
+from .logs import (
+    LogContextGroup,
+    LogContextResponse,
+    LogEvidenceRequest,
+    LogExternalLink,
+    LogItem,
+    LogSearchRequest,
+    LogSearchResponse,
+    LogSourceConfig,
+    LogSourcePublic,
+    LogSourceUpsert,
+    LogTimeRange,
+    VMwareLogContextQuery,
+    VMwareLogTimeWindow,
 )
 from .incident import (
     Incident,
@@ -145,6 +161,11 @@ from .resume import (
 __all__ = [
     "ApiEnvelope", "make_success", "make_error",
     "Evidence", "EvidencePackage", "EvidenceSourceStats", "EvidenceCoverage", "EvidenceError", "EvidenceContradiction",
+    "ExternalLink",
+    "LogContextGroup", "LogContextResponse", "LogEvidenceRequest", "LogExternalLink",
+    "LogItem", "LogSearchRequest", "LogSearchResponse", "LogSourceConfig",
+    "LogSourcePublic", "LogSourceUpsert", "LogTimeRange",
+    "VMwareLogContextQuery", "VMwareLogTimeWindow",
     "Incident", "AffectedObject", "RootCause", "RootCauseCandidate", "IncidentTimelineEntry",
     "EvidenceSufficiency", "Hypothesis", "CounterEvidenceResult",
     "ChatSession", "ChatMessage", "ToolTrace",

@@ -1,3 +1,11 @@
+export interface ExternalLink {
+  provider: string;
+  title: string;
+  url: string;
+  query?: string | null;
+  kind?: string;
+}
+
 export interface Evidence {
   evidence_id: string;
   source: string;
@@ -9,6 +17,7 @@ export interface Evidence {
   raw_ref: string | null;
   confidence: number;
   correlation_key: string | null;
+  external_links?: ExternalLink[];
 }
 
 export interface EvidenceSourceStats {

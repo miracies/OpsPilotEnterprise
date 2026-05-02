@@ -58,6 +58,7 @@ const navGroups = [
       { href: "/notifications", label: "值班通知", icon: Bell },
       { href: "/audit", label: "审计中心", icon: ClipboardList },
       { href: "/evidence", label: "证据中心", icon: FileSearch },
+      { href: "/logs/search", label: "日志检索", icon: FileSearch },
       { href: "/cases", label: "案例归档", icon: Archive },
       { href: "/memory", label: "记忆中心", icon: BrainCircuit },
     ],

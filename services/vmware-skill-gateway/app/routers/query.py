@@ -34,6 +34,12 @@ class QueryEventsBody(BaseModel):
     connection: dict | None = None
 
 
+class VmDiagnosisBundleBody(BaseModel):
+    vm_id: str = Field(..., description="Virtual machine MOID or mock id")
+    hours: int = Field(4, ge=1, le=168)
+    connection: dict | None = None
+
+
 class QueryMetricsBody(BaseModel):
     object_id: str
     metric: str = Field(..., description="Metric key, e.g. cpu.usage.average")
@@ -79,6 +85,14 @@ async def get_cluster_detail(body: ClusterIdBody) -> dict:
 async def query_events(body: QueryEventsBody) -> dict:
     events = await VCenterService(body.connection).query_events(body.object_id, body.hours)
     return make_success({"object_id": body.object_id, "hours": body.hours, "events": events})
+
+
+@router.post("/collect_vm_diagnosis_bundle")
+async def collect_vm_diagnosis_bundle(body: VmDiagnosisBundleBody) -> dict:
+    bundle = await VCenterService(body.connection).collect_vm_diagnosis_bundle(body.vm_id, body.hours)
+    if bundle is None:
+        return make_error(f"Virtual machine not found: {body.vm_id}")
+    return make_success(bundle)
 
 
 @router.post("/query_metrics")

@@ -6,6 +6,14 @@ from pydantic import BaseModel
 EvidenceSourceType = Literal["event", "metric", "log", "topology", "kb", "change", "external_kb", "detail", "alert"]
 
 
+class ExternalLink(BaseModel):
+    provider: str
+    title: str
+    url: str
+    query: str | None = None
+    kind: str = "external"
+
+
 class Evidence(BaseModel):
     evidence_id: str
     source: str
@@ -17,6 +25,7 @@ class Evidence(BaseModel):
     raw_ref: str | None = None
     confidence: float
     correlation_key: str | None = None
+    external_links: list[ExternalLink] = []
 
 
 class EvidenceSourceStats(BaseModel):

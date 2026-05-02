@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { FileSearch, Loader2, RefreshCcw, AlertTriangle } from "lucide-react";
+import { ExternalLink as ExternalLinkIcon, FileSearch, Loader2, RefreshCcw, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ type EvidenceItem = {
   summary: string;
   confidence: number;
   timestamp: string;
+  raw_ref?: string | null;
+  external_links?: Array<{ provider: string; title: string; url: string; query?: string | null; kind?: string }>;
 };
 
 type SourceStat = {
@@ -27,7 +29,12 @@ type SourceStat = {
 type Coverage = {
   expected_sources?: string[];
   present_sources?: string[];
-  missing_sources?: string[];
+  missing_sources?: string[] | number;
+  required_evidence_types?: string[];
+  present_evidence_types?: string[];
+  missing_critical_evidence?: string[];
+  sufficiency_score?: number;
+  freshness_score?: number;
 };
 
 type EvidenceError = {
@@ -47,13 +54,20 @@ export default function EvidencePage() {
   const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
-    apiFetch<{ success: boolean; data?: IncidentItem[]; error?: string }>("/api/v1/incidents")
+    apiFetch<{ success: boolean; data?: IncidentItem[] | { incidents?: IncidentItem[]; items?: IncidentItem[] }; error?: string }>("/api/v1/incidents")
       .then((res) => {
         if (!res.success) {
           setErrorMsg(res.error || "加载事件列表失败");
           return;
         }
-        const items = res.data ?? [];
+        const payload = res.data;
+        const items = Array.isArray(payload)
+          ? payload
+          : Array.isArray(payload?.incidents)
+            ? payload.incidents
+            : Array.isArray(payload?.items)
+              ? payload.items
+              : [];
         setIncidents(items);
         if (items.length > 0) {
           setIncidentId(items[0].id);
@@ -63,6 +77,9 @@ export default function EvidencePage() {
   }, []);
 
   const canAggregate = useMemo(() => Boolean(incidentId) && !loading, [incidentId, loading]);
+  const expectedEvidence = coverage.expected_sources ?? coverage.required_evidence_types ?? [];
+  const presentEvidence = coverage.present_sources ?? coverage.present_evidence_types ?? [];
+  const missingEvidence = coverage.missing_critical_evidence ?? (Array.isArray(coverage.missing_sources) ? coverage.missing_sources : []);
 
   async function aggregate() {
     if (!incidentId) return;
@@ -165,9 +182,12 @@ export default function EvidencePage() {
           <CardTitle>覆盖率</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1 text-sm text-slate-700">
-          <div>期望来源: {(coverage.expected_sources ?? []).join(",") || "-"}</div>
-          <div>已覆盖来源: {(coverage.present_sources ?? []).join(",") || "-"}</div>
-          <div className="text-amber-700">缺失来源: {(coverage.missing_sources ?? []).join(",") || "无"}</div>
+          <div>期望证据: {expectedEvidence.join(",") || "-"}</div>
+          <div>已覆盖证据: {presentEvidence.join(",") || "-"}</div>
+          <div className="text-amber-700">关键缺失: {missingEvidence.join(",") || "无"}</div>
+          <div className="text-xs text-slate-500">
+            sufficiency={coverage.sufficiency_score ?? "-"} · freshness={coverage.freshness_score ?? "-"}
+          </div>
         </CardContent>
       </Card>
 
@@ -189,7 +209,16 @@ export default function EvidencePage() {
                     <span className="font-mono text-xs text-slate-500">{e.evidence_id}</span>
                   </div>
                   <div className="text-slate-700">{e.summary}</div>
-                  <div className="mt-1 text-xs text-slate-500">confidence={e.confidence}</div>
+                  <div className="mt-1 text-xs text-slate-500">confidence={e.confidence}{e.raw_ref ? ` · ${e.raw_ref}` : ""}</div>
+                  {(e.external_links ?? []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {(e.external_links ?? []).map((link) => (
+                        <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs text-blue-700 hover:bg-blue-50">
+                          <ExternalLinkIcon className="h-3 w-3" /> {link.title || link.provider}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

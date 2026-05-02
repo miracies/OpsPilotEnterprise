@@ -6,11 +6,16 @@ import os
 import httpx
 from fastapi import APIRouter
 
-from opspilot_schema.envelope import make_error
+from opspilot_schema.envelope import make_error, make_success
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
 EVIDENCE_AGGREGATOR_URL = os.environ.get("EVIDENCE_AGGREGATOR_URL", "http://127.0.0.1:8050")
+
+
+@router.get("")
+async def list_evidence():
+    return make_success({"items": []})
 
 
 @router.post("/aggregate")
@@ -31,4 +36,3 @@ async def get_evidence(evidence_id: str):
             return resp.json()
         except httpx.HTTPError as exc:
             return make_error(f"Evidence aggregator unreachable: {exc}")
-

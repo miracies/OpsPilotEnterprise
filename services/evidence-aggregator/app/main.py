@@ -28,6 +28,7 @@ app = FastAPI(title="OpsPilot Evidence Aggregator")
 TOOL_GATEWAY_URL = os.environ.get("TOOL_GATEWAY_URL", "http://127.0.0.1:8020").rstrip("/")
 EVENT_INGESTION_URL = os.environ.get("EVENT_INGESTION_URL", "http://127.0.0.1:8060").rstrip("/")
 KNOWLEDGE_SERVICE_URL = os.environ.get("KNOWLEDGE_SERVICE_URL", "http://127.0.0.1:8072").rstrip("/")
+LOG_GATEWAY_URL = os.environ.get("LOG_GATEWAY_URL", "http://127.0.0.1:8055").rstrip("/")
 GRAYLOG_URL = os.environ.get("GRAYLOG_URL", "").rstrip("/")
 OPENNMS_URL = os.environ.get("OPENNMS_URL", "").rstrip("/")
 VCENTER_ENDPOINT = os.environ.get("VCENTER_ENDPOINT", "https://192.168.10.100:443/sdk")
@@ -205,6 +206,7 @@ def _make_ev(
     confidence: float,
     raw_ref: str | None = None,
     correlation_key: str | None = None,
+    external_links: list[dict[str, Any]] | None = None,
 ) -> Evidence:
     ev = Evidence(
         evidence_id=f"ev-{uuid.uuid4().hex[:12]}",
@@ -217,9 +219,87 @@ def _make_ev(
         raw_ref=raw_ref,
         confidence=max(0.0, min(confidence, 1.0)),
         correlation_key=correlation_key,
+        external_links=external_links or [],
     )
     _EVIDENCE_STORE[ev.evidence_id] = ev
     return ev
+
+
+def _scenario_from_context(alert_context: dict[str, Any], summary: str) -> str:
+    text = " ".join(
+        str(x or "")
+        for x in (
+            alert_context.get("scenario"),
+            alert_context.get("alert_name"),
+            alert_context.get("summary"),
+            summary,
+        )
+    ).lower()
+    if "host disconnected" in text or "not responding" in text:
+        return "host_disconnected"
+    if "vmotion" in text or "migration" in text or "relocate" in text:
+        return "vmotion_failed"
+    if any(token in text for token in ("datastore", "snapshot", "apd", "pdl", "consolidation")):
+        return "datastore_snapshot_issue"
+    if "ha" in text or "failover" in text or "fdm" in text:
+        return "ha_failover"
+    return "vm_overall_status_red"
+
+
+async def _collect_log_gateway_evidence(
+    *,
+    incident_id: str,
+    object_id: str,
+    object_type: str,
+    primary: dict[str, Any],
+    summary: str,
+    alert_context: dict[str, Any],
+    vm_context: dict[str, Any],
+    corr: str,
+) -> tuple[list[Evidence], EvidenceError | None]:
+    host = vm_context.get("host_name") or vm_context.get("host_id")
+    datastore = None
+    datastore_names = vm_context.get("datastore_names")
+    if isinstance(datastore_names, list) and datastore_names:
+        datastore = datastore_names[0]
+    payload = {
+        "incident_id": incident_id,
+        "vcenter": alert_context.get("vcenter") or alert_context.get("vcenter_name"),
+        "host": host,
+        "vm_name": vm_context.get("vm_name") or primary.get("object_name"),
+        "vm_moid": object_id if ("vm" in object_type.lower() or "virtualmachine" in object_type.lower()) else alert_context.get("vm_moid"),
+        "datastore": datastore,
+        "scenario": _scenario_from_context(alert_context, summary),
+        "timestamp": alert_context.get("timestamp") or alert_context.get("alert_time"),
+        "limit": int(alert_context.get("log_limit") or 60),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{LOG_GATEWAY_URL}/api/v1/logs/context", json=payload)
+        body = resp.json()
+        if not body.get("success"):
+            return [], EvidenceError(source="log-gateway", message=body.get("error") or "log context query failed")
+        data = body.get("data") or {}
+        evidences: list[Evidence] = []
+        for group in data.get("groups") or []:
+            for item in (group.get("items") or [])[:5]:
+                log_id = str(item.get("log_id") or "")
+                evidences.append(
+                    _make_ev(
+                        source=f"log-gateway.{item.get('backend') or 'logs'}",
+                        source_type="log",
+                        object_type=object_type,
+                        object_id=object_id or str(item.get("source") or "log"),
+                        summary=f"{group.get('name')}: {item.get('message') or item.get('raw_message') or 'log evidence'}",
+                        confidence=0.72,
+                        raw_ref=f"log://{log_id}" if log_id else None,
+                        correlation_key=corr,
+                        external_links=item.get("external_links") or [],
+                    )
+                )
+        return evidences, None
+    except Exception as exc:  # noqa: BLE001
+        return [], EvidenceError(source="log-gateway", message=str(exc))
 
 
 def _detect_contradictions(evidences: list[Evidence]) -> list[EvidenceContradiction]:
@@ -305,6 +385,7 @@ async def aggregate(body: AggregateRequest) -> dict:
         object_type = str(primary.get("object_type") or details.get("object_type") or "ManagedObject")
         summary = str(incident.get("summary") or "")
         corr = f"incident:{body.incident_id}"
+        vm_log_context: dict[str, Any] = {}
         try:
             alert_match = await _match_alert_knowledge(incident, body.alert_context)
         except Exception as exc:  # noqa: BLE001
@@ -351,6 +432,20 @@ async def aggregate(body: AggregateRequest) -> dict:
                         _safe_call(
                             detail_tool_name,
                             _invoke_tool(detail_tool_name, detail_payload, timeout_sec=10.0),
+                        )
+                    )
+                )
+
+            if "virtualmachine" in object_type_l or "vm" in object_type_l:
+                tasks.append(
+                    asyncio.create_task(
+                        _safe_call(
+                            "vmware.collect_vm_diagnosis_bundle",
+                            _invoke_tool(
+                                "vmware.collect_vm_diagnosis_bundle",
+                                {"connection": _connection(), "vm_id": object_id, "hours": int(body.alert_context.get("hours") or 4)},
+                                timeout_sec=12.0,
+                            ),
                         )
                     )
                 )
@@ -437,6 +532,116 @@ async def aggregate(body: AggregateRequest) -> dict:
                     )
                 )
                 collected_source_types.add("detail")
+            elif source == "vmware.collect_vm_diagnosis_bundle" and output:
+                basic = output.get("basic_status") if isinstance(output.get("basic_status"), dict) else {}
+                if basic:
+                    vm_log_context.update(
+                        {
+                            "vm_name": basic.get("name"),
+                            "host_id": basic.get("host_id"),
+                            "host_name": basic.get("host_name"),
+                            "datastore_names": basic.get("datastore_names"),
+                        }
+                    )
+                    detail_bits = []
+                    for key in ("overall_status", "connection_state", "power_state", "guest_heartbeat_status", "tools_status", "host_name"):
+                        value = basic.get(key)
+                        if value not in (None, ""):
+                            detail_bits.append(f"{key}={value}")
+                    evidences.append(
+                        _make_ev(
+                            source="vmware.collect_vm_diagnosis_bundle",
+                            source_type="detail",
+                            object_type=object_type,
+                            object_id=object_id,
+                            summary="vm.basic_status " + (", ".join(detail_bits) or "available"),
+                            confidence=0.90,
+                            raw_ref=f"tool://vmware.collect_vm_diagnosis_bundle/{object_id}#basic_status",
+                            correlation_key=corr,
+                        )
+                    )
+                    collected_source_types.add("detail")
+                for alarm in (output.get("triggered_alarms") or [])[:6]:
+                    evidences.append(
+                        _make_ev(
+                            source="vmware.collect_vm_diagnosis_bundle",
+                            source_type="alert",
+                            object_type=object_type,
+                            object_id=object_id,
+                            summary=(
+                                f"vm.triggered_alarms alarm={alarm.get('alarm_name') or alarm.get('key')} "
+                                f"status={alarm.get('status')} acknowledged={alarm.get('acknowledged')}"
+                            ),
+                            confidence=0.88,
+                            raw_ref=f"tool://vmware.collect_vm_diagnosis_bundle/{object_id}#triggered_alarms",
+                            correlation_key=corr,
+                        )
+                    )
+                    collected_source_types.add("alert")
+                for issue in (output.get("config_issues") or [])[:6]:
+                    evidences.append(
+                        _make_ev(
+                            source="vmware.collect_vm_diagnosis_bundle",
+                            source_type="detail",
+                            object_type=object_type,
+                            object_id=object_id,
+                            summary=f"vm.config_issues type={issue.get('fault_type')} message={issue.get('message')}",
+                            confidence=0.86,
+                            raw_ref=f"tool://vmware.collect_vm_diagnosis_bundle/{object_id}#config_issues",
+                            correlation_key=corr,
+                        )
+                    )
+                    collected_source_types.add("detail")
+                for item in (output.get("recent_events") or [])[:5]:
+                    evidences.append(
+                        _make_ev(
+                            source="vmware.collect_vm_diagnosis_bundle",
+                            source_type="event",
+                            object_type=object_type,
+                            object_id=object_id,
+                            summary=f"vm.recent_events {item.get('event_type') or item.get('type')}: {item.get('message')}",
+                            confidence=0.78,
+                            raw_ref=f"tool://vmware.collect_vm_diagnosis_bundle/{object_id}#recent_events",
+                            correlation_key=corr,
+                        )
+                    )
+                    collected_source_types.add("event")
+                snapshot = output.get("snapshot_status") if isinstance(output.get("snapshot_status"), dict) else {}
+                dependency = output.get("dependency_status") if isinstance(output.get("dependency_status"), dict) else {}
+                if snapshot or dependency:
+                    evidences.append(
+                        _make_ev(
+                            source="vmware.collect_vm_diagnosis_bundle",
+                            source_type="topology",
+                            object_type=object_type,
+                            object_id=object_id,
+                            summary=(
+                                f"vm.dependency_status host={(dependency.get('host') or {}).get('name')} "
+                                f"datastores={len(dependency.get('datastores') or [])} networks={len(dependency.get('networks') or [])} "
+                                f"snapshot_count={snapshot.get('snapshot_count')} consolidation_needed={snapshot.get('consolidation_needed')}"
+                            ),
+                            confidence=0.80,
+                            raw_ref=f"tool://vmware.collect_vm_diagnosis_bundle/{object_id}#dependencies",
+                            correlation_key=corr,
+                        )
+                    )
+                    collected_source_types.add("topology")
+                perf = output.get("performance_metrics") if isinstance(output.get("performance_metrics"), dict) else {}
+                if perf:
+                    latest_keys = {key: (value[-1] if isinstance(value, list) and value else value) for key, value in list(perf.items())[:6]}
+                    evidences.append(
+                        _make_ev(
+                            source="vmware.collect_vm_diagnosis_bundle",
+                            source_type="metric",
+                            object_type=object_type,
+                            object_id=object_id,
+                            summary=f"vm.performance_metrics latest={json.dumps(latest_keys, ensure_ascii=False)[:700]}",
+                            confidence=0.76,
+                            raw_ref=f"tool://vmware.collect_vm_diagnosis_bundle/{object_id}#performance_metrics",
+                            correlation_key=corr,
+                        )
+                    )
+                    collected_source_types.add("metric")
             elif source == "vmware.query_metrics" and output:
                 points = output.get("points") or output.get("series") or []
                 latest = points[-1] if isinstance(points, list) and points else {}
@@ -574,7 +779,21 @@ async def aggregate(body: AggregateRequest) -> dict:
         if opennms_error:
             errors.append(opennms_error)
 
-        errors.append(EvidenceError(source="logs", message="log source not configured in current deployment"))
+        log_evs, log_error = await _collect_log_gateway_evidence(
+            incident_id=body.incident_id,
+            object_id=object_id,
+            object_type=object_type,
+            primary=primary,
+            summary=summary,
+            alert_context=body.alert_context,
+            vm_context=vm_log_context,
+            corr=corr,
+        )
+        evidences.extend(log_evs)
+        if log_evs:
+            collected_source_types.add("log")
+        if log_error:
+            errors.append(log_error)
 
         present_types = sorted({ev.source_type for ev in evidences})
         missing_critical = [ev_type for ev_type in required_types if ev_type not in present_types]
@@ -641,6 +860,26 @@ async def aggregate(body: AggregateRequest) -> dict:
         ]
         payload["safe_actions"] = alert_match.get("safe_actions") or []
         payload["approval_actions"] = alert_match.get("approval_actions") or []
+        payload["present_evidence_keys"] = sorted(
+            {
+                key
+                for ev in evidences
+                for key in (
+                    "vm.basic_status",
+                    "vm.triggered_alarms",
+                    "vm.config_issues",
+                    "vm.recent_events",
+                    "vm.datastore_status",
+                    "vm.host_status",
+                    "vm.performance_metrics",
+                    "vc.logs",
+                    "host.logs",
+                )
+                if key in ev.summary
+                or (key == "vc.logs" and ev.source_type == "log")
+                or (key == "host.logs" and ev.source_type == "log")
+            }
+        )
         return make_success(payload)
     except Exception as exc:  # noqa: BLE001
         return make_error(str(exc))

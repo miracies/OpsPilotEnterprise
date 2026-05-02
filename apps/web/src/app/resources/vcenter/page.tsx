@@ -137,20 +137,20 @@ export default function VCenterResourcesPage() {
             <TableCard
               title="集群"
               columns={["名称", "主机数", "状态"]}
-              rows={overview.clusters.map((cluster: any) => [
-                cluster.name,
+              rows={overview.clusters.map((cluster) => [
+                String(cluster.name ?? ""),
                 String(cluster.host_count ?? 0),
-                <StatusBadge key={`${cluster.cluster_id}-status`} status={String(cluster.overall_status ?? "gray")} />,
+                <StatusBadge key={`${String(cluster.cluster_id ?? cluster.name ?? "")}-status`} status={String(cluster.overall_status ?? "gray")} />,
               ])}
             />
             <TableCard
               title="主机"
               columns={["名称", "CPU 使用", "内存使用", "状态"]}
-              rows={overview.hosts.map((host: any) => [
-                host.name,
+              rows={overview.hosts.map((host) => [
+                String(host.name ?? ""),
                 `${host.cpu_usage_mhz ?? 0} MHz`,
                 `${host.memory_usage_mb ?? 0} MB`,
-                <StatusBadge key={`${host.host_id}-status`} status={String(host.overall_status ?? "gray")} />,
+                <StatusBadge key={`${String(host.host_id ?? host.name ?? "")}-status`} status={String(host.overall_status ?? "gray")} />,
               ])}
             />
           </div>
@@ -159,17 +159,17 @@ export default function VCenterResourcesPage() {
             <TableCard
               title="虚拟机"
               columns={["名称", "电源状态"]}
-              rows={(inventory.virtual_machines ?? []).slice(0, 20).map((vm: any) => [
-                vm.name,
-                <Badge key={`${vm.vm_id}-power`} variant={vm.power_state === "poweredOn" ? "success" : "warning"}>{vm.power_state}</Badge>,
+              rows={(inventory.virtual_machines ?? []).slice(0, 20).map((vm) => [
+                String(vm.name ?? ""),
+                <Badge key={`${String(vm.vm_id ?? vm.name ?? "")}-power`} variant={vm.power_state === "poweredOn" ? "success" : "warning"}>{String(vm.power_state ?? "")}</Badge>,
               ])}
             />
             <TableCard
               title="数据存储"
               columns={["名称", "类型", "总容量(GB)", "空闲(GB)"]}
-              rows={(inventory.datastores ?? []).map((ds: any) => [
-                ds.name,
-                ds.type,
+              rows={(inventory.datastores ?? []).map((ds) => [
+                String(ds.name ?? ""),
+                String(ds.type ?? ""),
                 String(ds.capacity_gb ?? 0),
                 String(ds.free_gb ?? 0),
               ])}

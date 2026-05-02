@@ -12,8 +12,7 @@ cat >/etc/docker/daemon.json <<'JSON'
 {
   "registry-mirrors": [
     "https://docker.m.daocloud.io",
-    "https://mirror.ccs.tencentyun.com",
-    "https://hub-mirror.c.163.com"
+    "https://docker.1ms.run"
   ]
 }
 JSON
@@ -26,6 +25,11 @@ CONF
 
 systemctl enable docker
 systemctl restart docker
+
+cat >/etc/sysctl.d/99-opspilot-opensearch.conf <<'CONF'
+vm.max_map_count=262144
+CONF
+sysctl --system >/dev/null
 
 docker --version
 docker compose version
